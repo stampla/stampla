@@ -44,9 +44,12 @@ YYYYMMDD_HHMMSS_hhhhhhhh
   in metadata values are deliberately ignored; the wall-clock part is
   the identity.
 - `hhhhhhhh` — the first 8 hex digits of the file's image-data hash
-  (ExifTool `ImageDataHash`, XXH64): the hash of the image/video
+  (ExifTool `ImageDataHash`, MD5): the hash of the image/video
   payload only, excluding metadata. Writing metadata never changes a
-  file's identity; editing image data does.
+  file's identity; editing image data does. For a media format whose
+  payload ExifTool cannot isolate, the whole-file MD5 stands in and
+  the report says so — such files trade the metadata-edit tolerance
+  for full coverage.
 - `ext` — the original extension, lowercased.
 
 The scheme is fixed. It is versioned as a whole (a future scheme
