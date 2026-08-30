@@ -1,0 +1,11 @@
+# Binaries
+/stampla
+/dist/
+
+# Test artifacts
+*.test
+/coverage.out
+
+# Editor litter
+*.swp
+.DS_Store
