@@ -20,14 +20,29 @@ ordered; when they conflict, the earlier one wins.
 
 ## Identity
 
-The canonical name of a file is:
+The canonical name of a file decomposes as
+`<prefix>[<suffix>][.<raw_ext>].<ext>`:
 
 ```
-YYYYMMDD_HHMMSS_hhhhhhhh.ext
+20260703_150727_9b677b64.nef            a master
+20260703_150727_9b677b64-Edit.tif       a labeled derivative (suffix)
+20260703_150727_9b677b64.nef.xmp        a sidecar appending to the
+                                        master's extension (raw_ext)
 ```
 
-- `YYYYMMDD_HHMMSS` — capture time in local wall-clock time,
-  resolved from metadata by tag-group-qualified ranking (below).
+Only the prefix ever changes when a file is renamed; suffix, raw
+extension and extension are always preserved. All files sharing a
+prefix form a group. The prefix is:
+
+```
+YYYYMMDD_HHMMSS_hhhhhhhh
+```
+
+- `YYYYMMDD_HHMMSS` — capture time in local wall-clock time, as a
+  person at the scene would have read off a watch, resolved from
+  metadata by tag-group-qualified ranking (below). Timezone suffixes
+  in metadata values are deliberately ignored; the wall-clock part is
+  the identity.
 - `hhhhhhhh` — the first 8 hex digits of the file's image-data hash
   (ExifTool `ImageDataHash`, XXH64): the hash of the image/video
   payload only, excluding metadata. Writing metadata never changes a
