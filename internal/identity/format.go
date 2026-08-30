@@ -103,6 +103,21 @@ func IsWriteOnce(ext string) bool {
 	return isMediaExt(ext) && !editableSet[ext]
 }
 
+// CameraNative reports whether the extension names a format a camera
+// writes: the RAW families and video, but never the containers an
+// editor writes into (tif, tiff, dng) even though those can master a
+// group of their own.
+//
+// It serves the labeled-derivative merge described in the package docs,
+// which asks whether a group owns a master before deciding that a
+// labeled group beside it is a derivative. Editor output such as
+// …-Edit.tif must answer no there, or every edit would look like a photo
+// of its own.
+func CameraNative(ext string) bool {
+	ext = normalizeExt(ext)
+	return (rawSet[ext] || videoSet[ext]) && !editableSet[ext]
+}
+
 // IsSidecar reports whether the path names a file that carries no
 // identity of its own and takes its master's: an .xmp, a vendor sidecar
 // (.nksc, .pp3), one kept in a vendor sidecar subdirectory, or any file

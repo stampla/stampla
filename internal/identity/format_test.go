@@ -72,6 +72,38 @@ func TestIsWriteOnce(t *testing.T) {
 	}
 }
 
+func TestCameraNative(t *testing.T) {
+	// What a camera writes and an editor does not: the merge rule reads
+	// "this group owns a master" off this table, so a container an
+	// editor writes into must not answer yes.
+	native := []string{
+		"nef", "NEF", ".nef", "cr2", "cr3", "raf", "rw2", "arw",
+		"mov", "mp4", "m4v", "avi", "mkv", "braw", "nev", "r3d",
+		"mts", "m2ts", "3gp", "wmv", "asf", "mpg", "mpeg",
+	}
+	for _, ext := range native {
+		t.Run("native/"+ext, func(t *testing.T) {
+			if !CameraNative(ext) {
+				t.Errorf("CameraNative(%q) = false, want true", ext)
+			}
+		})
+	}
+
+	// tif and dng master groups but are also what an edit is saved as,
+	// so a labeled group holding one is still a derivative.
+	foreign := []string{
+		"tif", "tiff", "TIFF", "dng", "jpg", "jpeg", "heic", "heif",
+		"psd", "xmp", "pp3", "nksc", "dop", "txt", "", ".",
+	}
+	for _, ext := range foreign {
+		t.Run("foreign/"+ext, func(t *testing.T) {
+			if CameraNative(ext) {
+				t.Errorf("CameraNative(%q) = true, want false", ext)
+			}
+		})
+	}
+}
+
 func TestIsSidecar(t *testing.T) {
 	cases := []struct {
 		path string
