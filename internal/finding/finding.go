@@ -10,28 +10,28 @@ package finding
 type Class string
 
 const (
-	// Converged: name, hash and location all match; nothing to do.
+	// Converged means name, hash and location all match; nothing to do.
 	Converged Class = "converged"
-	// Misplaced: correct name, wrong directory per the declared layout.
+	// Misplaced means correct name, wrong directory per the declared layout.
 	Misplaced Class = "misplaced"
-	// Stale: recomputed identity differs on an editable format; rename.
+	// Stale means recomputed identity differs on an editable format; rename.
 	Stale Class = "stale"
-	// Corrupt: payload hash differs on a write-once format. Alarm;
+	// Corrupt means payload hash differs on a write-once format. Alarm;
 	// the file is never renamed — the old name is the only record of
 	// what its identity used to be.
 	Corrupt Class = "corrupt"
-	// TimeDrift: capture time differs on a write-once format while the
+	// TimeDrift means capture time differs on a write-once format while the
 	// payload hash is intact. Alarm; ImageDataHash does not cover
 	// metadata, so this must not pass as an innocent date edit.
 	TimeDrift Class = "time-drift"
-	// Unresolvable: no capture time derivable from metadata.
+	// Unresolvable means no capture time derivable from metadata.
 	Unresolvable Class = "unresolvable"
-	// Conflict: the target path is occupied by different content.
+	// Conflict means the target path is occupied by different content.
 	Conflict Class = "conflict"
-	// Missing: membership check only — not present at the expected
+	// Missing means membership check only — not present at the expected
 	// path in the destination archive.
 	Missing Class = "missing"
-	// Incoming: not yet in the destination; will be copied or moved in.
+	// Incoming means not yet in the destination; will be copied or moved in.
 	Incoming Class = "incoming"
 )
 
