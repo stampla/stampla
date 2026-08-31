@@ -32,4 +32,5 @@ The Python implementation's history lives in
 - Corruption refusal: write-once formats are never renamed on
   identity mismatch; distinct `corrupt` and `time-drift` alarms.
 - `--porcelain` NDJSON output (`format: 1`), `--stdin -z` input,
-  dry-run previews, diff-style exit codes.
+  dry-run previews (`-n`), diff-style exit codes, `--color` with
+  `NO_COLOR` support, `--workers`, and `stampla version` / `help`.
