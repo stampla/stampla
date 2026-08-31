@@ -48,15 +48,24 @@ func (c *collector) expand() {
 		}
 	}
 
-	merged := labeledMerge(candidates)
-	groups := make(map[string][]string, len(candidates))
-	for _, key := range slices.Sorted(maps.Keys(candidates)) {
-		target := merged[key]
-		groups[target] = append(groups[target], candidates[key]...)
+	// One base name can name a still and a clip; they are two groups
+	// before anything else is decided about either.
+	buckets := make(map[bucket][]string, len(candidates))
+	for key, paths := range candidates {
+		for kind, members := range splitKinds(paths) {
+			buckets[bucket{key: key, kind: kind}] = members
+		}
 	}
 
-	for _, key := range slices.Sorted(maps.Keys(groups)) {
-		paths := groups[key]
+	merged := labeledMerge(buckets)
+	groups := make(map[bucket][]string, len(buckets))
+	for _, id := range sortedBuckets(buckets) {
+		target := merged[id]
+		groups[target] = append(groups[target], buckets[id]...)
+	}
+
+	for _, id := range sortedBuckets(groups) {
+		paths := groups[id]
 		// The neighborhood holds every group in the directories it
 		// touched; only the ones the input actually selected are this
 		// run's work.
@@ -67,9 +76,88 @@ func (c *collector) expand() {
 			continue
 		}
 		if members := c.members(paths); len(members) > 0 {
-			c.scan.Groups = append(c.scan.Groups, Group{Key: key, Members: members})
+			c.scan.Groups = append(c.scan.Groups,
+				Group{Key: id.key, Kind: id.kind, Members: members})
 		}
 	}
+}
+
+// bucket is a group while the scan is still building it: the key its
+// members share and the media they converge as. Both halves are needed —
+// the photo and the video that share a base name share a key.
+type bucket struct {
+	key  string
+	kind Kind
+}
+
+// sortedBuckets orders groups for a deterministic scan: by key, then by
+// kind, which puts the photo group of a contested base name before the
+// video one.
+func sortedBuckets[V any](groups map[bucket]V) []bucket {
+	ids := slices.Collect(maps.Keys(groups))
+	slices.SortFunc(ids, func(a, b bucket) int {
+		if d := strings.Compare(a.key, b.key); d != 0 {
+			return d
+		}
+		return strings.Compare(string(a.kind), string(b.kind))
+	})
+	return ids
+}
+
+// splitKinds divides one key's files into the groups they converge as. A
+// group never spans photo and video, so a base name that names both is
+// two groups here, each with its own master and its own identity.
+//
+// A file's kind is the kind of the master its name names: its own
+// extension for a media file, and for a sidecar the master extension its
+// name chain carries — DSC_1234.MP4.xmp names the clip,
+// NKSC_PARAM/DSC_1234.NEF.nksc the still. A sidecar carrying no master
+// extension (a bare DSC_1234.xmp) claims neither, and the longer claim
+// wins: it joins the photo group wherever the base has one, since bare
+// sidecars are what photo tools write, and the video group only when
+// there is no photo group to join. A base name with nothing but bare
+// sidecars converges as a photo group.
+func splitKinds(paths []string) map[Kind][]string {
+	kinds := make(map[Kind][]string, 2)
+	var unclaimed []string
+	for _, path := range paths {
+		if kind, claimed := claim(path); claimed {
+			kinds[kind] = append(kinds[kind], path)
+		} else {
+			unclaimed = append(unclaimed, path)
+		}
+	}
+	if len(unclaimed) > 0 {
+		home := KindPhoto
+		if len(kinds[KindPhoto]) == 0 && len(kinds[KindVideo]) > 0 {
+			home = KindVideo
+		}
+		kinds[home] = append(kinds[home], unclaimed...)
+	}
+	return kinds
+}
+
+// claim is the media kind a file's name names, and whether it names one
+// at all. A media file claims its own kind; a sidecar claims the kind of
+// the master extension appended in its name (DSC_1234.NEF.xmp, and the
+// same shape under a vendor sidecar directory). Everything else claims
+// nothing.
+func claim(path string) (Kind, bool) {
+	base := filepath.Base(path)
+	if identity.IsMedia(base) {
+		return kindOf(filepath.Ext(base)), true
+	}
+	if stem := strings.TrimSuffix(base, filepath.Ext(base)); identity.IsMedia(stem) {
+		return kindOf(filepath.Ext(stem)), true
+	}
+	return KindPhoto, false
+}
+
+func kindOf(ext string) Kind {
+	if identity.IsVideo(ext) {
+		return KindVideo
+	}
+	return KindPhoto
 }
 
 // neighborhood is where a group's members can be: its home directory and
@@ -162,38 +250,41 @@ func memberRank(path string) int {
 	}
 }
 
-// labeledMerge maps every group key to the key its group converges
-// under. A group whose base extends another's with a "-" or "_" label is
-// that group's derivative — but only when the shorter base owns a
-// camera-native master and the labeled one does not. A labeled group
-// with its own master is a separate photo, not an edit (IMG_01.NEF
-// beside IMG.NEF), and where several shorter bases qualify the longest
-// wins. Only groups in one directory are compared; a key that carries no
-// directory is a not-yet-named file beside the working directory, and
-// compares there.
+// labeledMerge maps every group to the group it converges under. A group
+// whose base extends another's with a "-" or "_" label is that group's
+// derivative — but only when the shorter base owns a camera-native
+// master and the labeled one does not. A labeled group with its own
+// master is a separate photo, not an edit (IMG_01.NEF beside IMG.NEF),
+// and where several shorter bases qualify the longest wins. Only groups
+// in one directory are compared; a key that carries no directory is a
+// not-yet-named file beside the working directory, and compares there.
+//
+// The merge honors the media boundary too: an edit is a derivative of
+// the photo it was made from, so …-Edit.tif never merges into a video
+// group, whatever base name the clip carries.
 //
 // The rule needs no exception for canonically named groups: every prefix
 // is the same width, so no prefix can extend another, and a labeled
 // derivative of a named master already shares its prefix.
-func labeledMerge(candidates map[string][]string) map[string]string {
-	native := make(map[string]bool, len(candidates))
-	for key, paths := range candidates {
-		native[key] = slices.ContainsFunc(paths, func(path string) bool {
+func labeledMerge(candidates map[bucket][]string) map[bucket]bucket {
+	native := make(map[bucket]bool, len(candidates))
+	for id, paths := range candidates {
+		native[id] = slices.ContainsFunc(paths, func(path string) bool {
 			return identity.CameraNative(filepath.Ext(path))
 		})
 	}
 
-	merged := make(map[string]string, len(candidates))
-	for key := range candidates {
-		merged[key] = key
-		if native[key] {
+	merged := make(map[bucket]bucket, len(candidates))
+	for id := range candidates {
+		merged[id] = id
+		if native[id] {
 			continue
 		}
-		dir, base := filepath.Dir(key), filepath.Base(key)
+		dir, base := filepath.Dir(id.key), filepath.Base(id.key)
 		parent := ""
 		for other := range candidates {
-			candidate := filepath.Base(other)
-			if !native[other] || filepath.Dir(other) != dir {
+			candidate := filepath.Base(other.key)
+			if other.kind != id.kind || !native[other] || filepath.Dir(other.key) != dir {
 				continue
 			}
 			if len(candidate) >= len(base) || !strings.HasPrefix(base, candidate) {
@@ -207,7 +298,7 @@ func labeledMerge(candidates map[string][]string) map[string]string {
 			}
 		}
 		if parent != "" {
-			merged[key] = filepath.Join(dir, parent)
+			merged[id] = bucket{key: filepath.Join(dir, parent), kind: id.kind}
 		}
 	}
 	return merged

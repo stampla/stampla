@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,6 +52,7 @@ func BuildPlan(opts Options) (*Plan, error) {
 		entries:   make(map[string][]string),
 		roots:     make(map[string]string),
 		claimed:   make(map[string]claim),
+		targets:   make(map[string]groupTargets),
 		contained: make(map[string]error),
 		plan: &Plan{
 			Mode:       opts.Mode,
@@ -68,7 +70,7 @@ func BuildPlan(opts Options) (*Plan, error) {
 	p.plan.Findings = append(p.plan.Findings, opts.Scan.Errors...)
 
 	p.identify()
-	p.probeOccupants()
+	p.probeSubstitution()
 	for _, group := range opts.Scan.Groups {
 		p.planGroup(group)
 	}
@@ -82,7 +84,9 @@ type planner struct {
 	dest string
 	plan *Plan
 
-	// identities holds one entry per group, keyed by the group key.
+	// identities holds one entry per group, keyed by scanner.Group.ID:
+	// a still and a clip sharing a base name are two groups under one
+	// key, and they have two identities.
 	identities map[string]resolved
 	// entries caches directory listings, so a target directory is read
 	// once however many files land in it.
@@ -92,10 +96,19 @@ type planner struct {
 	// claimed records which target path each group took, so that two
 	// sources deriving one name are settled rather than raced.
 	claimed map[string]claim
-	// occupants holds the content digest of every occupied master
-	// target, so that a file already wearing an identity name can be
-	// asked whether it really holds that content.
+	// occupants holds the payload digest of every occupied master
+	// target, used only to say which kind of conflict an occupied name
+	// is.
 	occupants map[string]hashResult
+	// wholes holds whole-file digests, of both sides of every content
+	// comparison the plan has to make.
+	wholes map[string]hashResult
+	// seeded holds the whole-file digests identification already had to
+	// compute, for the formats ExifTool isolates no payload in.
+	seeded map[string]hashResult
+	// targets holds where each group's members would land, worked out
+	// once and read by every pass, keyed by scanner.Group.ID.
+	targets map[string]groupTargets
 	// contained caches the containment verdict of each target
 	// directory.
 	contained map[string]error
@@ -106,17 +119,50 @@ type resolved struct {
 	master scanner.Item
 	id     identity.Identity
 	prov   identity.Provenance
-	// digest is the full content hash the identity was cut from, kept
-	// for comparing two sources that derive the same name.
-	digest string
-	err    error
+	// payload is the digest the identity was cut from: ExifTool's
+	// image-data hash, or the whole file where the format has no payload
+	// ExifTool isolates. It names the file. It does not say whether one
+	// file can stand in for another — see substitutable.
+	payload string
+	err     error
 }
 
-// claim records the group that took a target path first.
+// memberTarget is one member of a group and where it would land.
+type memberTarget struct {
+	item   scanner.Item
+	source string
+	target string
+}
+
+// groupTargets is where a whole group would land.
+//
+// It is worked out once and read by both the pass that decides which
+// files have to be digested and the pass that classifies them, so the
+// two can never disagree about where a file was going — which would mean
+// comparing the contents of the wrong pair.
+type groupTargets struct {
+	entry     resolved
+	base      string
+	masterDir string
+	dir       string
+	entering  bool
+	members   []memberTarget
+	// stray is a member sitting outside its group's home directory,
+	// which no relocation can place without guessing; strayed says one
+	// was found.
+	stray   scanner.Item
+	strayed bool
+}
+
+// claim records the group that took a set of target paths first, with
+// what it would put at each of them.
 type claim struct {
-	key    string
-	master string
-	digest string
+	key     string
+	master  string
+	payload string
+	// digests maps each claimed target to the whole-file digest of the
+	// source that claimed it.
+	digests map[string]string
 }
 
 // refuseDAM stops a mutation into an archive whose masters another tool
@@ -155,14 +201,19 @@ func (p *planner) identify() {
 	for _, group := range p.opts.Scan.Groups {
 		master, ok := masterOf(group.Members)
 		if !ok {
-			p.identities[group.Key] = resolved{
-				master: master,
-				err:    fmt.Errorf("no master in this group: nothing carries an identity to share"),
+			// A group with no master is either a stray sidecar whose
+			// master this run never saw, or a file in a format stampla
+			// owns nothing about — which only the membership check ever
+			// collects, and which has its own thing to say.
+			reason := "no master in this group: nothing carries an identity to share"
+			if unowned(master.Path) {
+				reason = unownedDetail
 			}
+			p.identities[group.ID()] = resolved{master: master, err: errors.New(reason)}
 			continue
 		}
-		p.identities[group.Key] = resolved{master: master}
-		keys = append(keys, group.Key)
+		p.identities[group.ID()] = resolved{master: master}
+		keys = append(keys, group.ID())
 		paths = append(paths, absPath(master.Path))
 	}
 
@@ -183,12 +234,12 @@ func (p *planner) identify() {
 			fallback = append(fallback, paths[i])
 		}
 	}
-	digests := hashFiles(fallback, p.opts.Workers, p.opts.Progress)
+	p.seeded = hashFiles(fallback, p.opts.Workers, p.opts.Progress)
 
 	for i, md := range metadata {
 		entry := p.identities[keys[i]]
 		fileHash := ""
-		if result, ok := digests[paths[i]]; ok {
+		if result, ok := p.seeded[paths[i]]; ok {
 			if result.err != nil {
 				entry.err = fmt.Errorf("%s: %w", paths[i], result.err)
 				p.identities[keys[i]] = entry
@@ -196,65 +247,125 @@ func (p *planner) identify() {
 			}
 			fileHash = result.digest
 		}
-		entry.digest = md.ImageDataHash
-		if entry.digest == "" {
-			entry.digest = fileHash
+		entry.payload = md.ImageDataHash
+		if entry.payload == "" {
+			entry.payload = fileHash
 		}
 		entry.id, entry.prov, entry.err = identity.Compute(md, fileHash)
 		p.identities[keys[i]] = entry
 	}
 }
 
-// probeOccupants reads the content of every master target that is
-// already taken.
+// targetsOf works out where every member of a group would land.
 //
-// A file sitting under an identity name is claiming that identity, and
-// the claim is worth exactly as much as its content. Re-importing a
-// memory card has to tell "this photo is already here" from "a different
-// photo is already under this name": the first converges silently, the
-// second is a conflict no plan may guess its way past, and only the
-// payload digest separates them. It is compared rather than the whole
-// file so that an archive copy somebody has since added keywords to
-// still counts as the same photograph — which is the entire point of
-// naming from the payload.
-//
-// Only master targets are read. A sidecar carries no identity of its
-// own, so there is nothing about it to verify, and reading every one
-// would double an import's metadata traffic for an answer nobody uses.
-// The membership check reads nothing here at all: its question is
-// presence at the place this archive files things, and it must never
-// pay for a deep verify it was not asked for.
-func (p *planner) probeOccupants() {
-	if p.opts.Mode == VerifyMembership {
-		return
+// Both the pass that decides which files have to be read and the pass
+// that classifies them go through here, and the answer is remembered, so
+// the two can never disagree about where a file was going — a
+// disagreement that would mean comparing the contents of the wrong pair
+// of files and calling the result convergence.
+func (p *planner) targetsOf(group scanner.Group) groupTargets {
+	if cached, done := p.targets[group.ID()]; done {
+		return cached
 	}
-	var targets []string
-	for _, group := range p.opts.Scan.Groups {
-		target, ok := p.masterTarget(group)
-		if !ok {
-			continue
+	entry := p.identities[group.ID()]
+	out := groupTargets{entry: entry, base: filepath.Base(group.Key)}
+	if entry.err == nil {
+		out.masterDir = filepath.Dir(absPath(entry.master.Path))
+		if p.opts.Mode == VerifyMembership {
+			// The membership question is about the place this archive
+			// files things, which is the layout and nothing else.
+			out.dir = filepath.Join(p.dest,
+				filepath.FromSlash(p.opts.Resolution.Pattern.Dir(entry.id.Time)))
+			out.entering = true
+		} else {
+			out.dir, out.entering = p.groupDir(out.masterDir, entry.id.Time)
 		}
-		if actual, present := p.entryAt(filepath.Dir(target), filepath.Base(target)); present &&
-			actual == filepath.Base(target) {
-			targets = append(targets, target)
+		for _, member := range group.Members {
+			source := absPath(member.Path)
+			dir, ok := memberTargetDir(out.masterDir, source, out.dir)
+			if !ok {
+				out.stray, out.strayed, out.members = member, true, nil
+				break
+			}
+			out.members = append(out.members, memberTarget{
+				item:   member,
+				source: source,
+				target: filepath.Join(dir,
+					targetBase(filepath.Base(member.Path), out.base, entry.id)),
+			})
 		}
 	}
-	slices.Sort(targets)
-	p.occupants = p.contentDigests(slices.Compact(targets))
+	p.targets[group.ID()] = out
+	return out
 }
 
-// masterTarget is where a group's master would land, when the group has
-// one and is not already there.
-func (p *planner) masterTarget(group scanner.Group) (string, bool) {
-	entry := p.identities[group.Key]
-	if entry.err != nil {
-		return "", false
+// probeSubstitution reads both sides of every content comparison the
+// plan is going to have to make.
+//
+// The comparison is over the whole file, and that is the point. A
+// payload digest names a photograph; it does not say that one file can
+// stand in for another, because keywords, GPS, copyright and every other
+// thing a person adds live in the metadata the payload digest
+// deliberately excludes. Treating payload equality as substitutability
+// is how a tool abandons the only copy of somebody's captions and
+// reports success: "already present", exit zero, format the card.
+//
+// So: byte-identical is converged, and anything else is a conflict for a
+// person to settle. The payload digest still names the file, and is read
+// here only for occupied master targets, to say which kind of conflict
+// an occupied name is — a different photograph, or the same one carrying
+// metadata this run would have thrown away.
+func (p *planner) probeSubstitution() {
+	claims := make(map[string][]string)
+	var needed, occupied []string
+
+	for _, group := range p.opts.Scan.Groups {
+		targets := p.targetsOf(group)
+		if targets.entry.err != nil || targets.strayed {
+			continue
+		}
+		for i, member := range targets.members {
+			if member.source == member.target {
+				continue
+			}
+			name := filepath.Base(member.target)
+			if actual, present := p.entryAt(filepath.Dir(member.target), name); present &&
+				actual == name {
+				needed = append(needed, member.source, member.target)
+				if i == 0 {
+					occupied = append(occupied, member.target)
+				}
+			}
+			key := foldKey(member.target)
+			claims[key] = append(claims[key], member.source)
+		}
 	}
-	masterAbs := absPath(entry.master.Path)
-	targetDir, _ := p.groupDir(filepath.Dir(masterAbs), entry.id.Time)
-	target := filepath.Join(targetDir,
-		targetBase(filepath.Base(entry.master.Path), filepath.Base(group.Key), entry.id))
-	return target, target != masterAbs
+	// Two sources deriving one name have to be compared with each other
+	// as well as with whatever is already there.
+	for _, sources := range claims {
+		if len(sources) > 1 {
+			needed = append(needed, sources...)
+		}
+	}
+
+	slices.Sort(needed)
+	p.wholes = make(map[string]hashResult)
+	var unread []string
+	for _, path := range slices.Compact(needed) {
+		// A master with no payload ExifTool could isolate was already
+		// hashed whole for its identity; that digest is the same digest.
+		if seeded, ok := p.seeded[path]; ok {
+			p.wholes[path] = seeded
+			continue
+		}
+		unread = append(unread, path)
+	}
+	for path, result := range hashFiles(unread, p.opts.Workers, p.opts.Progress) {
+		p.wholes[path] = result
+	}
+
+	slices.Sort(occupied)
+	p.occupants = p.contentDigests(slices.Compact(occupied))
 }
 
 // contentDigests reads, for each path, the digest an identity would be
@@ -330,9 +441,13 @@ func (p *planner) planGroup(group scanner.Group) {
 		}
 	}
 
-	entry := p.identities[group.Key]
+	entry := p.identities[group.ID()]
 	gp := GroupPlan{
-		Key:        group.Key,
+		// The group's ID, never its bare key: a still and a clip sharing
+		// a base name are two groups, and every map that reaches back to
+		// a group from a result keys on this.
+		Key:        group.ID(),
+		Kind:       group.Kind,
 		Master:     entry.master.Path,
 		Identity:   entry.id,
 		Provenance: entry.prov,
@@ -342,18 +457,24 @@ func (p *planner) planGroup(group scanner.Group) {
 		return
 	}
 
-	masterDir := filepath.Dir(absPath(entry.master.Path))
+	targets := p.targetsOf(group)
 	if p.opts.Mode.mutating() {
-		if root, nested := p.nestedRoot(masterDir); nested {
+		if root, nested := p.nestedRoot(targets.masterDir); nested {
 			p.refuse(&gp, entry.master, finding.Conflict, fmt.Sprintf(
 				"belongs to the archive at %s; another archive inside this one is"+
 					" not this run's business", root))
 			return
 		}
 	}
+	if targets.strayed {
+		p.refuse(&gp, targets.stray, finding.Conflict, fmt.Sprintf(
+			"sits outside its group's home directory %s; two homes for one name"+
+				" is a question only a person can answer", targets.masterDir))
+		return
+	}
 
 	if p.opts.Mode == VerifyMembership {
-		p.planMembership(&gp, group, entry)
+		p.planMembership(&gp, targets)
 		return
 	}
 	if class, detail := alarmOf(entry); class != "" {
@@ -361,22 +482,14 @@ func (p *planner) planGroup(group scanner.Group) {
 		return
 	}
 
-	targetDir, entering := p.groupDir(masterDir, entry.id.Time)
-	base := filepath.Base(group.Key)
-	actions := make([]Action, 0, len(group.Members))
-	for i, member := range group.Members {
-		memberDir, ok := memberTargetDir(masterDir, absPath(member.Path), targetDir)
-		if !ok {
-			p.refuse(&gp, member, finding.Conflict, fmt.Sprintf(
-				"sits outside its group's home directory %s; two homes for one name"+
-					" is a question only a person can answer", masterDir))
-			return
-		}
-		// The master is the group's only content-verified member: it is
-		// what an occupied target has to be compared against.
-		actions = append(actions, p.classify(entry, member, base, memberDir, entering, i == 0))
+	actions := make([]Action, 0, len(targets.members))
+	for i, member := range targets.members {
+		// The master is the group's only identified member: it is what
+		// tells a conflict over an occupied name from a conflict over
+		// the metadata attached to one.
+		actions = append(actions, p.classify(targets, member, i == 0))
 	}
-	if !p.settleClaims(&gp, entry, actions) {
+	if !p.settleClaims(&gp, targets) {
 		return
 	}
 	gp.Actions = actions
@@ -404,37 +517,56 @@ func groupClass(actions []Action) finding.Class {
 }
 
 // planMembership answers "is this group accounted for in that archive".
+//
 // It derives where every member would live under the destination's
-// layout and looks. Nothing at the destination is hashed: the question
-// is presence at the place this archive files it, and a name that is an
-// identity is what makes presence answerable at all.
-func (p *planner) planMembership(gp *GroupPlan, group scanner.Group, entry resolved) {
-	masterDir := filepath.Dir(absPath(entry.master.Path))
-	targetDir := filepath.Join(p.dest, filepath.FromSlash(p.opts.Resolution.Pattern.Dir(entry.id.Time)))
-	base := filepath.Base(group.Key)
-
-	actions := make([]Action, 0, len(group.Members))
-	for _, member := range group.Members {
-		memberDir, ok := memberTargetDir(masterDir, absPath(member.Path), targetDir)
-		if !ok {
-			p.refuse(gp, member, finding.Conflict, fmt.Sprintf(
-				"sits outside its group's home directory %s", masterDir))
-			return
+// layout, looks, and — where something is there — compares the two files
+// whole. Presence at the right name is not the answer on its own: this
+// exit code is what a person reads before formatting the card, so
+// "accounted for" has to mean the archive holds this file, not a file
+// that would be given the same name. A copy differing only in metadata
+// is a copy missing whatever that metadata was.
+func (p *planner) planMembership(gp *GroupPlan, targets groupTargets) {
+	actions := make([]Action, 0, len(targets.members))
+	for _, member := range targets.members {
+		action := Action{
+			Old:     member.item.Path,
+			New:     member.target,
+			Implied: member.item.Implied,
 		}
-		expected := filepath.Join(memberDir, targetBase(filepath.Base(member.Path), base, entry.id))
-		action := Action{Old: member.Path, New: expected, Implied: member.Implied}
-		if p.exists(expected) {
-			action.Class = finding.Converged
-			action.Detail = "accounted for at " + expected
-		} else {
+		switch {
+		case unowned(member.item.Path):
+			action.Class = finding.Unresolvable
+			action.Detail = unownedDetail
+		case !p.exists(member.target):
 			action.Class = finding.Missing
-			action.Detail = "not present at " + expected
+			action.Detail = "not present at " + member.target
+		default:
+			state, detail := p.substitutable(member.source, member.target, "")
+			if state == occTaken {
+				action.Class = finding.Converged
+				action.Detail = "accounted for at " + member.target
+			} else {
+				action.Class = finding.Conflict
+				action.Detail = detail
+			}
 		}
 		actions = append(actions, action)
 	}
 	gp.Actions = actions
 	gp.Class = groupClass(actions)
 	p.commit(*gp)
+}
+
+// unownedDetail is what a file stampla owns no identity for is told.
+const unownedDetail = "format not owned; cannot be accounted for"
+
+// unowned reports whether stampla owns neither an identity for this file
+// nor a reason to rename it. Such a file only ever reaches a plan
+// through scanner.Options.KeepUnowned, which the membership check sets:
+// its answer is about a whole card, and a file the report never
+// mentioned is a file that answer did not cover.
+func unowned(path string) bool {
+	return !identity.IsMedia(path) && !identity.IsSidecar(path)
 }
 
 // groupDir is where a group belongs, and whether it is entering the
@@ -517,17 +649,27 @@ func alarmOf(entry resolved) (finding.Class, string) {
 const evidenceTime = "20060102_150405"
 
 // classify decides one member.
-func (p *planner) classify(entry resolved, member scanner.Item, base, targetDir string, entering, isMaster bool) Action {
-	oldAbs := absPath(member.Path)
-	newName := targetBase(filepath.Base(member.Path), base, entry.id)
-	newAbs := filepath.Join(targetDir, newName)
-	action := Action{Old: member.Path, New: newAbs, Implied: member.Implied}
+func (p *planner) classify(targets groupTargets, member memberTarget, isMaster bool) Action {
+	entry := targets.entry
+	oldAbs, newAbs := member.source, member.target
+	targetDir, newName := filepath.Dir(newAbs), filepath.Base(newAbs)
+	action := Action{Old: member.item.Path, New: newAbs, Implied: member.item.Implied}
 
-	expect := ""
-	if isMaster {
-		expect = entry.digest
+	if unowned(member.item.Path) {
+		// Only the membership check ever collects one of these, and it
+		// classifies them itself; reaching here means a caller asked a
+		// mutation verb to keep them. Renaming a file stampla owns no
+		// identity for is not something a mode flag may turn on.
+		action.Class = finding.Unresolvable
+		action.Detail = unownedDetail
+		return action
 	}
-	switch state, detail := p.occupancy(oldAbs, newAbs, targetDir, newName, expect); state {
+
+	payload := ""
+	if isMaster {
+		payload = entry.payload
+	}
+	switch state, detail := p.occupancy(oldAbs, newAbs, targetDir, newName, payload); state {
 	case occSelf:
 		action.Class = finding.Converged
 		action.New = ""
@@ -550,11 +692,11 @@ func (p *planner) classify(entry resolved, member scanner.Item, base, targetDir 
 		}
 		return action
 	case occTaken:
-		// The name is the identity, so a file already sitting under this
-		// name holds this content. The source is left exactly where it
-		// is: it is accounted for, but a source is only ever deleted
-		// after its own copy has been verified, and a matching name is
-		// not that verification.
+		// Byte for byte the same file, so the archive's copy really does
+		// stand in for this one. The source is still left exactly where
+		// it is: a source is only ever deleted after its own copy has
+		// been verified, and finding an equal file already there is not
+		// this run having made one.
 		action.Class = finding.Converged
 		action.Detail = "already present at " + newAbs
 		if p.opts.Mode.mutating() {
@@ -563,8 +705,9 @@ func (p *planner) classify(entry resolved, member scanner.Item, base, targetDir 
 		return action
 	}
 
-	action.Class, action.Detail = nameClass(member.Path, newName, targetDir, base, entering, entry)
-	action.Verb = p.verbFor(action.Class, entering)
+	action.Class, action.Detail = nameClass(
+		member.item.Path, newName, targetDir, targets.base, targets.entering, entry)
+	action.Verb = p.verbFor(action.Class, targets.entering)
 	switch {
 	case action.Verb == VerbNone && p.opts.Mode == Copy && action.Class != finding.Converged:
 		action.Detail += "; cp never renames a file that is already under the" +
@@ -670,14 +813,12 @@ const (
 
 // occupancy inspects a target path without touching it.
 //
-// The name is the identity, so a file sitting under an identity name is
-// that identity — that is what lets a re-imported memory card converge
-// instead of duplicating, with no database and no second read of the
-// archive. What the check must not miss is a target that only looks free
-// or only looks taken: on a case-insensitive filesystem a differently
-// spelled entry occupies the slot, and a rename into it would overwrite
-// a file whose name never appeared in any plan.
-func (p *planner) occupancy(oldAbs, newAbs, dir, name, expect string) (occupancy, string) {
+// What the check must not miss is a target that only looks free or only
+// looks taken: on a case-insensitive filesystem a differently spelled
+// entry occupies the slot, and a rename into it would overwrite a file
+// whose name never appeared in any plan. Whether an occupant can stand
+// in for the source is substitutable's question, not this one's.
+func (p *planner) occupancy(oldAbs, newAbs, dir, name, payload string) (occupancy, string) {
 	if oldAbs == newAbs {
 		return occSelf, ""
 	}
@@ -711,24 +852,47 @@ func (p *planner) occupancy(oldAbs, newAbs, dir, name, expect string) (occupancy
 	if os.SameFile(oldInfo, newInfo) {
 		return occClaim, "the leftover source link at " + oldAbs + " is dropped"
 	}
-	if expect == "" {
-		// A member with no identity of its own: its name is its master's,
-		// and the master's content is what was verified.
-		return occTaken, ""
-	}
-	held, probed := p.occupants[newAbs]
+	return p.substitutable(oldAbs, newAbs, payload)
+}
+
+// substitutable asks whether the file already at the target can stand in
+// for the source, and it asks it of the whole file.
+//
+// Payload equality is not file equality. Keywords, captions, GPS,
+// copyright, ratings, the whole record of what somebody did with a
+// photograph — all of it lives in the metadata that the payload digest
+// deliberately excludes, which is exactly what makes that digest a
+// stable name. Reusing it as a substitutability test says "already
+// present" about a file that is missing everything a person added, and
+// then a card is formatted over the only copy of it.
+//
+// So the answer is byte-identical or nothing. Anything else is a
+// conflict, and where the payloads do match it is named as what it is,
+// because "same photograph, different metadata" is a thing a person can
+// act on and "different content" is not.
+func (p *planner) substitutable(source, target, payload string) (occupancy, string) {
+	here, read := p.wholes[source]
+	there, probed := p.wholes[target]
 	switch {
-	case !probed:
-		return occOther, newAbs + " is occupied and its content was not read"
-	case held.err != nil:
-		return occOther, fmt.Sprintf("%s is occupied and could not be read: %v", newAbs, held.err)
-	case held.digest == expect:
+	case !read || !probed:
+		return occOther, fmt.Sprintf("%s is occupied and the two were not compared", target)
+	case here.err != nil:
+		return occOther, fmt.Sprintf("%s could not be read: %v", source, here.err)
+	case there.err != nil:
+		return occOther, fmt.Sprintf("%s is occupied and could not be read: %v", target, there.err)
+	case here.digest == there.digest:
 		return occTaken, ""
-	default:
-		return occOther, fmt.Sprintf(
-			"%s already exists and holds different content (%s there, %s here);"+
-				" neither file is touched", newAbs, short(held.digest), short(expect))
 	}
+	if payload != "" {
+		if held, ok := p.occupants[target]; ok && held.err == nil && held.digest == payload {
+			return occOther, fmt.Sprintf(
+				"%s holds the same image data but different metadata — the two files"+
+					" are not interchangeable and neither is touched; resolve by hand",
+				target)
+		}
+	}
+	return occOther, fmt.Sprintf(
+		"%s already exists and holds different content; neither file is touched", target)
 }
 
 // short cuts a digest to the slice a name carries, which is the form a
@@ -743,39 +907,74 @@ func short(digest string) string {
 	return digest[:identity.HashLength]
 }
 
-// settleClaims resolves two groups deriving the same target path.
+// settleClaims resolves two groups of one run deriving the same target
+// paths.
 //
-// Two files with one identity are two files with the same capture second
-// and the same payload digest, which on a memory card means the camera
-// wrote the same frame twice: it converges once, and reporting the
-// second as work would be reporting work that must not happen. Content
-// that genuinely differs under one name is a conflict no plan may guess
-// its way past.
-func (p *planner) settleClaims(gp *GroupPlan, entry resolved, actions []Action) bool {
-	for _, action := range actions {
-		if action.New == "" {
+// The same frame written twice by a camera converges once: reporting the
+// second as work would be reporting work that must not happen. But
+// "twice" has to mean byte-identical, member for member — two files with
+// one payload and different metadata are two different files, and
+// silently keeping either one of them is silently discarding the other's
+// captions. Every member is compared, not only the master: a group whose
+// sidecar differs is not the same group.
+func (p *planner) settleClaims(gp *GroupPlan, targets groupTargets) bool {
+	entry := targets.entry
+	mine := p.claimDigests(targets)
+	for _, member := range targets.members {
+		if member.source == member.target {
 			continue
 		}
-		held, taken := p.claimed[foldKey(action.New)]
+		held, taken := p.claimed[foldKey(member.target)]
 		if !taken || held.key == gp.Key {
 			continue
 		}
-		if held.digest != "" && held.digest == entry.digest {
+		switch {
+		case sameClaim(mine, held.digests):
 			p.refuse(gp, entry.master, finding.Converged, fmt.Sprintf(
-				"identical content to %s, which already converges to %s; converged once",
-				held.master, action.New))
-			return false
+				"byte for byte the same files as %s, which already converges to %s;"+
+					" converged once", held.master, member.target))
+		case held.payload != "" && held.payload == entry.payload:
+			p.refuse(gp, entry.master, finding.Conflict, fmt.Sprintf(
+				"derives %s, the same name as %s, and holds the same image data with"+
+					" different metadata — the two are not interchangeable and neither"+
+					" is taken; resolve by hand", member.target, held.master))
+		default:
+			p.refuse(gp, entry.master, finding.Conflict, fmt.Sprintf(
+				"derives %s, the same name as %s, but the content differs;"+
+					" neither is taken", member.target, held.master))
 		}
-		p.refuse(gp, entry.master, finding.Conflict, fmt.Sprintf(
-			"derives %s, the same name as %s, but the content differs;"+
-				" neither is renamed", action.New, held.master))
 		return false
 	}
-	for _, action := range actions {
-		if action.New != "" {
-			p.claimed[foldKey(action.New)] = claim{
-				key: gp.Key, master: entry.master.Path, digest: entry.digest,
-			}
+	held := claim{
+		key: gp.Key, master: entry.master.Path, payload: entry.payload, digests: mine,
+	}
+	for target := range mine {
+		p.claimed[target] = held
+	}
+	return true
+}
+
+// claimDigests is what a group would put at each name it takes.
+func (p *planner) claimDigests(targets groupTargets) map[string]string {
+	digests := make(map[string]string, len(targets.members))
+	for _, member := range targets.members {
+		if member.source != member.target {
+			digests[foldKey(member.target)] = p.wholes[member.source].digest
+		}
+	}
+	return digests
+}
+
+// sameClaim reports whether two groups would put the very same bytes at
+// the very same names. A digest that could not be computed never counts
+// as a match: an unread file is not a proven duplicate.
+func sameClaim(mine, held map[string]string) bool {
+	if len(mine) == 0 || len(mine) != len(held) {
+		return false
+	}
+	for target, digest := range mine {
+		if other, ok := held[target]; !ok || digest == "" || digest != other {
+			return false
 		}
 	}
 	return true

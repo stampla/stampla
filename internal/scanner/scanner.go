@@ -34,16 +34,45 @@ type Item struct {
 	Implied bool
 }
 
+// Kind is the media a group converges as.
+//
+// A group never spans photo and video. Same-base stills are one group —
+// a RAW and its JPEG twin share a capture and converge together — but a
+// photo and a video that share a base name (IMG_1234.HEIC beside
+// IMG_1234.MOV, the shape every Live Photo has) are two identities. One
+// name can assert only one of them, and a still renamed onto a clip's
+// prefix would claim a capture it never had; worse, as a group member
+// rather than a master it would never be content-checked again, so the
+// false claim would survive every later verify.
+type Kind string
+
+const (
+	// KindPhoto is a still group: RAW, JPEG, HEIC, TIFF, DNG.
+	KindPhoto Kind = "photo"
+	// KindVideo is a moving-image group.
+	KindVideo Kind = "video"
+)
+
 // Group is a master and everything that renames with it.
 type Group struct {
 	// Key is the identity.GroupKey the members share, after the
-	// labeled-derivative merge.
+	// labeled-derivative merge. It names the group's base, which is what
+	// a member's name is stemmed against.
 	Key string
+	// Kind is the media the group converges as. The key alone does not
+	// identify a group — a photo and a video sharing a base name are two
+	// groups with one key — so anything indexing groups keys on ID.
+	Kind Kind
 	// Members are the group's files: the master first when the group has
 	// one, then sidecars and derivatives by path. A group either fully
 	// converges or is reported, so the order is the order to act in.
 	Members []Item
 }
+
+// ID identifies one group among a scan's groups: the key names the base
+// its members share, and the kind tells the still apart from the clip
+// that shares that base.
+func (g Group) ID() string { return g.Key + "#" + string(g.Kind) }
 
 // Options configures a collection.
 type Options struct {
@@ -55,6 +84,19 @@ type Options struct {
 	// StopAtRoots stops recursion at a nested archive root, for the
 	// mutation verbs. The verify verb leaves it false and descends.
 	StopAtRoots bool
+	// KeepUnowned collects the files recursion would otherwise filter
+	// away for being in a format stampla does not own, so the caller can
+	// account for them rather than count them.
+	//
+	// It exists for the membership check, whose exit code says whether a
+	// memory card may be formatted: a file the report never mentioned is
+	// a file the answer did not cover, and "not mentioned" and "not
+	// there" must never look alike to somebody about to erase the
+	// original. Dot-files are still skipped — a hidden file is not one a
+	// card holds a photograph in — and every mutation verb leaves this
+	// false, because a format stampla owns no identity for is not a
+	// format it renames.
+	KeepUnowned bool
 }
 
 // Skipped counts what recursion passed over. None of it is a finding —
@@ -256,7 +298,7 @@ func (c *collector) visitFile(path string, d fs.DirEntry) {
 		c.scan.Skipped.Hidden++
 		return
 	}
-	if !owned(path) {
+	if !owned(path) && !c.opts.KeepUnowned {
 		c.scan.Skipped.Other++
 		return
 	}

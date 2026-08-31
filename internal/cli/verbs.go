@@ -174,7 +174,10 @@ func (e *env) membership(rep reporter, pool *exif.Pool, opts *options, src, dest
 	}
 	rep.head(engine.VerifyMembership, dest, false, res)
 
-	scan, err := scanner.Collect([]string{src}, scanner.Options{})
+	// Every regular file, including the formats stampla owns no identity
+	// for: this exit code is what a card is formatted on, and a file the
+	// report never mentioned is a file the answer did not cover.
+	scan, err := scanner.Collect([]string{src}, scanner.Options{KeepUnowned: true})
 	if err != nil {
 		return e.abort(verbVerify, rep, err)
 	}

@@ -57,10 +57,11 @@ func TestVerifyMembership(t *testing.T) {
 	}
 }
 
-// Membership asks about presence, not about content: it never reads the
-// destination's bytes, because the deep check is a different command and
-// must not be paid for by everyone.
-func TestVerifyMembershipDoesNotReadTheDestination(t *testing.T) {
+// "Accounted for" means the archive holds this file, not a file that
+// would be given the same name. The exit code is what a person reads
+// before formatting a card, so presence at the right name is not enough
+// on its own.
+func TestVerifyMembershipComparesContent(t *testing.T) {
 	pool := newPool(t)
 	card, dest := t.TempDir(), t.TempDir()
 	testutil.Tree(t, card, map[string]string{"DSC_1234.jpg": "@dated.jpg"})
@@ -72,7 +73,11 @@ func TestVerifyMembershipDoesNotReadTheDestination(t *testing.T) {
 		Mode: VerifyMembership, Scan: scanOf(t, card), Dest: dest,
 		Resolution: fallbackLayout(t), Pool: pool,
 	})
-	wantClass(t, plan, filepath.Join(card, "DSC_1234.jpg"), finding.Converged)
+	wantClass(t, plan, filepath.Join(card, "DSC_1234.jpg"), finding.Conflict)
+	if plan.ExitCode() != finding.ExitPending {
+		t.Errorf("exit code %d, want %d — this card is not accounted for",
+			plan.ExitCode(), finding.ExitPending)
+	}
 }
 
 // The self-check classifies everything under the root against its own

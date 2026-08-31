@@ -94,10 +94,25 @@ func (a *applier) group(group GroupPlan) {
 	// The receipt and Result.Landed are written from one slice, in one
 	// order: what a caller reports and what the archive's own history
 	// says must never be two accounts of the same run.
+	// A record that cannot be written fails the group here, before any
+	// source is removed. The receipt is the only surviving record of
+	// what a file used to be called, and deleting an original whose old
+	// name was never written down destroys information no re-run can
+	// recover — which is the first principle, not a detail of ordering.
 	if err := a.record(done); err != nil {
 		a.result.Failed = append(a.result.Failed, Failure{
-			Key: group.Key, Path: a.receiptPath(), Err: err, Reverted: false,
+			Key: group.Key, Path: a.receiptPath(), Reverted: false,
+			Err: fmt.Errorf("the copies landed and were verified, but the record of the"+
+				" original names could not be written (%w), so no source was removed."+
+				" The archive holds the files and the sources are where they were;"+
+				" re-running reports them as already present rather than moving them,"+
+				" so removing them is a decision for a person once %s can be written",
+				err, a.receiptPath()),
 		})
+		// Neither applied nor landed: what a caller reports as changed
+		// and what the receipt records have to stay one list, and this
+		// group is in neither.
+		return
 	}
 	a.result.Applied = append(a.result.Applied, group.Key)
 	a.result.Landed = append(a.result.Landed, done...)

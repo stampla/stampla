@@ -36,6 +36,12 @@
 // mistaken for "there was nothing to see". Filtering applies to
 // recursion only: an explicitly named file is never quietly dropped.
 //
+// Options.KeepUnowned turns the format filter off, collecting those
+// files instead of counting them. The membership check sets it, because
+// its exit code says whether a memory card may be formatted and a file
+// the report never mentioned is a file that answer did not cover. Dot
+// files are skipped either way.
+//
 // # Nested roots
 //
 // A directory whose .stampla marker declares a layout is another
@@ -68,7 +74,25 @@
 // identity.CameraNative: editor output such as …-Edit.tif counts as a
 // derivative rather than as a master of its own.
 //
-// Groups and their members come back in a fixed order — members master
-// first, then sidecars and derivatives by path — so the same input state
-// yields the same Scan.
+// # The media boundary
+//
+// A group never spans photo and video. Same-base stills stay one group —
+// a RAW and its JPEG twin are one capture — but a photo and a video
+// sharing a base name (IMG_1234.HEIC beside IMG_1234.MOV, every Live
+// Photo's shape) are two groups, each mastering itself. One name asserts
+// one identity, and a still that took a clip's prefix would claim a
+// capture it never had, in a name no later verify would question: only
+// masters are content-checked, and the still would be a member.
+//
+// A sidecar joins the group its name names — DSC_1234.NEF.xmp the
+// still's, DSC_1234.MP4.xmp the clip's. A bare DSC_1234.xmp names
+// neither, and the longer claim wins: it joins the photo group wherever
+// the base has one (bare sidecars are what photo tools write), and the
+// video group only when there is none. Because two groups can share one
+// key this way, Group.ID — key and kind — is what identifies a group;
+// Group.Key names only the base its members are stemmed against.
+//
+// Groups and their members come back in a fixed order — by key, then
+// photo before video, members master first and then sidecars and
+// derivatives by path — so the same input state yields the same Scan.
 package scanner

@@ -72,6 +72,35 @@ func TestIsWriteOnce(t *testing.T) {
 	}
 }
 
+func TestIsVideo(t *testing.T) {
+	// The photo/video line is a grouping boundary: a still and a clip
+	// sharing a base name are two identities.
+	video := []string{
+		"mov", "MOV", ".mov", "mp4", "m4v", "avi", "mkv", "braw", "nev",
+		"r3d", "mts", "m2ts", "3gp", "wmv", "asf", "mpg", "mpeg",
+	}
+	for _, ext := range video {
+		t.Run("video/"+ext, func(t *testing.T) {
+			if !IsVideo(ext) {
+				t.Errorf("IsVideo(%q) = false, want true", ext)
+			}
+		})
+	}
+
+	stills := []string{
+		"nef", "cr2", "cr3", "arw", "raf", "rw2", "dng", "tif", "tiff",
+		"jpg", "JPEG", "heic", "heif", "psd", "xmp", "pp3", "nksc",
+		"txt", "", ".",
+	}
+	for _, ext := range stills {
+		t.Run("still/"+ext, func(t *testing.T) {
+			if IsVideo(ext) {
+				t.Errorf("IsVideo(%q) = true, want false", ext)
+			}
+		})
+	}
+}
+
 func TestCameraNative(t *testing.T) {
 	// What a camera writes and an editor does not: the merge rule reads
 	// "this group owns a master" off this table, so a container an

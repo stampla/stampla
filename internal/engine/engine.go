@@ -148,8 +148,20 @@ type Action struct {
 
 // GroupPlan is what the plan has to say about one convergence group.
 type GroupPlan struct {
-	// Key is the scanner's group key.
+	// Key is scanner.Group.ID: the group's base and the media it
+	// converges as, together. It identifies one group within a run,
+	// which the scanner's bare key does not — a still and a clip sharing
+	// a base name (IMG_1234.HEIC beside IMG_1234.MOV) are two groups
+	// under one key, with two identities and two sets of files.
+	//
+	// It is the handle Result.Applied, Result.Skipped and Failure.Key
+	// carry, so a caller matching a failure back to its files matches on
+	// this and never on the base alone. Matching on the base would light
+	// up a Live Photo's stills when only its clip failed.
 	Key string
+	// Kind is the media this group converges as, for a caller that wants
+	// to say so without taking Key apart.
+	Kind scanner.Kind
 	// Class is the group's own disposition: the class of its master, or
 	// the reason the whole group is refused.
 	Class finding.Class

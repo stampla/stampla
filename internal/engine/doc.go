@@ -47,12 +47,20 @@
 //     finding.Unresolvable — reported, skipped, never guessed at, and
 //     never a reason to abort the run.
 //
-// A target path that is already occupied by a file whose name parses to
-// the same identity is finding.Converged: the name embeds the content
-// hash, so a file sitting under an identity name is that identity, and
-// re-importing the same memory card converges instead of duplicating.
-// A target occupied by anything else is finding.Conflict, and is
-// refused.
+// A target path that is already occupied is finding.Converged only when
+// the file there is byte-for-byte the source, which is what makes
+// re-importing the same memory card a no-op. Anything else is
+// finding.Conflict, and is refused.
+//
+// Equality is over the whole file, deliberately, and this is the one
+// place the payload hash must not be used. Captions, keywords, GPS,
+// copyright and ratings all live in the metadata the payload hash
+// excludes — which is exactly what makes it a stable name — so two files
+// it calls identical can differ by an evening's work. Calling those
+// interchangeable would report "already present" about a file missing
+// all of it, and then the card gets formatted. Where the payloads do
+// match, the refusal says so, because "the same photograph carrying
+// different metadata" is something a person can act on.
 //
 // # Groups
 //
@@ -76,7 +84,20 @@
 //     that target;
 //   - every applied mutation appends a line to the receipt at the
 //     destination root, fsynced after each group, so the receipts of an
-//     interrupted run name exactly the groups that landed.
+//     interrupted run name exactly the groups that landed;
+//   - a source is removed only after its copy has been verified and its
+//     old name recorded, in that order. A receipt that cannot be written
+//     fails its group with the copies left in place and every source
+//     untouched: the receipt is the only surviving account of what a
+//     file used to be called, and an original deleted without one is
+//     information no re-run can recover.
+//
+// The receipt is four tab-separated fields, and a path that holds a tab,
+// a newline or a carriage return — or that begins with a quote — is
+// written in Go's quoted string form, which a reader recognizes by its
+// leading quote and undoes with strconv.Unquote. Every other path,
+// Windows paths and their backslashes included, is written verbatim.
+// See receiptField.
 //
 // A second run of the same command sees the landed members as converged
 // and finishes the rest.

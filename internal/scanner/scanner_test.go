@@ -52,9 +52,10 @@ func under(root string, paths ...string) []string {
 	return full
 }
 
-// summary renders a scan's groups as "key: member member …", relative to
-// root and slash-separated, with an implied member marked "~". It shows
-// grouping, membership and order in one comparable line.
+// summary renders a scan's groups as "key (kind): member member …",
+// relative to root and slash-separated, with an implied member marked
+// "~". It shows grouping, kind, membership and order in one comparable
+// line.
 func summary(root string, scan *Scan) []string {
 	lines := make([]string, 0, len(scan.Groups))
 	for _, group := range scan.Groups {
@@ -66,7 +67,8 @@ func summary(root string, scan *Scan) []string {
 			}
 			parts = append(parts, part)
 		}
-		lines = append(lines, show(root, group.Key)+": "+strings.Join(parts, " "))
+		lines = append(lines, show(root, group.Key)+
+			" ("+string(group.Kind)+"): "+strings.Join(parts, " "))
 	}
 	return lines
 }
@@ -479,7 +481,7 @@ func TestCollectGroupsStopAtNestedRoots(t *testing.T) {
 		"inner/.stampla=layout = \"\"\n",
 		"inner/20220523_192742_d3147a94.xmp",
 	}
-	const key = "20220523_192742_d3147a94: "
+	const key = "20220523_192742_d3147a94 (photo): "
 
 	cases := []struct {
 		name        string
@@ -594,7 +596,7 @@ func TestCollectExplicitInputs(t *testing.T) {
 		if len(scan.Errors) != 0 {
 			t.Fatalf("findings = %v, want none", scan.Errors)
 		}
-		want := []string{"card/DSC_1234: card/DSC_1234.NEF~ card/DSC_1234.xmp"}
+		want := []string{"card/DSC_1234 (photo): card/DSC_1234.NEF~ card/DSC_1234.xmp"}
 		if got := summary(root, scan); !reflect.DeepEqual(got, want) {
 			t.Errorf("groups = %v, want %v", got, want)
 		}
@@ -660,5 +662,37 @@ func TestItemSizes(t *testing.T) {
 		if !member.ModTime.Equal(info.ModTime()) {
 			t.Errorf("%s: ModTime = %v, want %v", show(root, member.Path), member.ModTime, info.ModTime())
 		}
+	}
+}
+
+// KeepUnowned collects the files the format filter would otherwise only
+// count. The membership check sets it, because its exit code says
+// whether a memory card may be formatted, and a file the report never
+// mentioned is a file that answer did not cover.
+func TestCollectKeepUnowned(t *testing.T) {
+	root := build(t,
+		"DSC_1234.jpg", "DSC_1234.xmp", "notes.txt", "sub/receipt.pdf", ".hidden.txt")
+
+	// The default is untouched: an unowned format is counted, not kept.
+	plain := collect(t, []string{root}, Options{})
+	if got, want := paths(root, plain), []string{"DSC_1234.jpg", "DSC_1234.xmp"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("by default the scan kept %v, want %v", got, want)
+	}
+	if plain.Skipped.Other != 2 {
+		t.Errorf("Skipped.Other is %d, want 2", plain.Skipped.Other)
+	}
+
+	kept := collect(t, []string{root}, Options{KeepUnowned: true})
+	want := []string{"DSC_1234.jpg", "DSC_1234.xmp", "notes.txt", "sub/receipt.pdf"}
+	if got := paths(root, kept); !reflect.DeepEqual(got, want) {
+		t.Errorf("KeepUnowned kept %v, want %v", got, want)
+	}
+	if kept.Skipped.Other != 0 {
+		t.Errorf("Skipped.Other is %d, want 0 — nothing was filtered away", kept.Skipped.Other)
+	}
+	// A dot-file is not one a card holds a photograph in, and stays
+	// skipped whichever way the format filter is set.
+	if kept.Skipped.Hidden != 1 {
+		t.Errorf("Skipped.Hidden is %d, want 1", kept.Skipped.Hidden)
 	}
 }

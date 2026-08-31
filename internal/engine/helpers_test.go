@@ -246,3 +246,30 @@ func corruptPayload(t *testing.T, path string) {
 			path, before)
 	}
 }
+
+// scanOfKeepingUnowned collects the way the membership check does: every
+// regular file, including the formats stampla owns no identity for.
+func scanOfKeepingUnowned(t *testing.T, inputs ...string) *scanner.Scan {
+	t.Helper()
+	scan, err := scanner.Collect(inputs, scanner.Options{KeepUnowned: true})
+	if err != nil {
+		t.Fatalf("collecting %v: %v", inputs, err)
+	}
+	return scan
+}
+
+// wantFinding asserts that a path reached the run's report under a
+// class, not only its group's actions: the human report is Findings, and
+// a refusal nobody prints is a refusal nobody acts on.
+func wantFinding(t *testing.T, plan *Plan, path string, class finding.Class) {
+	t.Helper()
+	for _, f := range plan.Findings {
+		if f.Path == path && f.Class == class {
+			if f.Detail == "" {
+				t.Errorf("the finding for %s states no evidence", path)
+			}
+			return
+		}
+	}
+	t.Fatalf("no %q finding for %s in the report\n%s", class, path, dumpPlan(plan))
+}

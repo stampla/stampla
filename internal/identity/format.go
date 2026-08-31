@@ -103,6 +103,16 @@ func IsWriteOnce(ext string) bool {
 	return isMediaExt(ext) && !editableSet[ext]
 }
 
+// IsVideo reports whether the extension names a moving-image format.
+//
+// The line it draws is a grouping boundary: a still and a clip that
+// share a base name are two identities, not one group, so the caller
+// that builds groups has to tell them apart. Sidecar and unknown
+// extensions are false — they are not media of either kind.
+func IsVideo(ext string) bool {
+	return isVideoExt(normalizeExt(ext))
+}
+
 // CameraNative reports whether the extension names a format a camera
 // writes: the RAW families and video, but never the containers an
 // editor writes into (tif, tiff, dng) even though those can master a
