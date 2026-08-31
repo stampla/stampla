@@ -66,18 +66,31 @@ Several tags with the same short name routinely coexist in one file
 only the tag-group-qualified name tells them apart. Times are read
 with `-a` and full group names, then ranked: maker/EXIF original
 capture tags first, then format-appropriate creation tags, with
-QuickTime UTC values converted to local time via the declared or
-inferred offset. A file with no resolvable capture time is a finding
-(`unresolvable`), never a guess — a silently wrong date is the
-failure mode this tool exists to prevent.
+QuickTime creation tags ranked last and taken at face value — some
+formats store local wall-clock time there (BRAW among them) and
+offer nothing else, so converting on a guess would corrupt exactly
+the files with no second source. The accepted cost: a camera that
+stores UTC in QuickTime yields UTC-offset names for its videos. A
+file with no resolvable capture time is a finding (`unresolvable`),
+never a guess — a silently wrong date is the failure mode this tool
+exists to prevent.
 
 ### Groups
 
 A master and its sidecars (e.g. `.xmp`, vendor sidecar directories)
-form one group sharing the name prefix. Groups converge atomically:
+form one group sharing the name prefix. A group never spans photo
+and video media: same-base stills (a RAW and its JPEG twin) are one
+group, but a photo and a video sharing a base name are separate
+groups, each with its own identity. Groups converge atomically:
 selecting any member selects the group; a group either fully
 converges or is reported, and a failure mid-group is healed by
 re-running (convergence is idempotent).
+
+Content verification covers each group's master; sidecars and
+derivative members converge by name, inherit the master's prefix,
+and are not content-checked — their payloads are not what the
+archive's promise is about, and a prefix is the master's identity,
+not theirs.
 
 ## The engine
 
