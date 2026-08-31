@@ -695,3 +695,65 @@ func TestEntryAtFollowsThePlatform(t *testing.T) {
 		t.Error("a name in an unreadable directory was reported present")
 	}
 }
+
+// The claim used where a filesystem has no hard links: the name is taken
+// with an exclusive create, and only this run's own empty placeholder is
+// ever renamed over.
+func TestClaimViaPlaceholder(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "old.bin")
+	target := filepath.Join(dir, "new.bin")
+	writeFile(t, old, "mine")
+
+	if err := claimViaPlaceholder(old, target); err != nil {
+		t.Fatalf("claimViaPlaceholder: %v", err)
+	}
+	if got := readFile(t, target); got != "mine" {
+		t.Errorf("the target holds %q", got)
+	}
+	if _, err := os.Lstat(old); !os.IsNotExist(err) {
+		t.Error("the source survived")
+	}
+
+	// An occupied name is refused, and the occupant is untouched.
+	writeFile(t, old, "mine again")
+	if err := claimViaPlaceholder(old, target); !errors.Is(err, ErrTargetExists) {
+		t.Errorf("claiming an occupied name: err %v, want ErrTargetExists", err)
+	}
+	if got := readFile(t, target); got != "mine" {
+		t.Error("a refused claim overwrote the target")
+	}
+	if got := readFile(t, old); got != "mine again" {
+		t.Error("a refused claim removed the source")
+	}
+
+	// A claim that cannot be completed leaves no placeholder behind.
+	free := filepath.Join(dir, "free.bin")
+	if err := claimViaPlaceholder(filepath.Join(dir, "absent.bin"), free); err == nil {
+		t.Error("claiming for a missing source succeeded")
+	}
+	if _, err := os.Lstat(free); !os.IsNotExist(err) {
+		t.Error("a failed claim left an empty file at the target")
+	}
+}
+
+// No file lands on a directory, whatever the platform's rename does
+// about existing targets.
+func TestClaimRenameRefusesADirectory(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "old.bin")
+	writeFile(t, old, "mine")
+	target := filepath.Join(dir, "occupied")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := claimRename(old, target); err == nil {
+		t.Fatal("renaming onto a directory succeeded")
+	}
+	if got := readFile(t, old); got != "mine" {
+		t.Error("the source did not survive a refused rename")
+	}
+	if info, err := os.Lstat(target); err != nil || !info.IsDir() {
+		t.Error("the directory was replaced")
+	}
+}

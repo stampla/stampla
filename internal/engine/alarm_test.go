@@ -138,10 +138,13 @@ func TestEditableFormatsGoStale(t *testing.T) {
 
 			mustApply(t, plan, ApplyOptions{})
 			// A re-dated JPEG belongs in a different month, and the
-			// declared layout moves it there.
-			relocated := filepath.Dir(strings.TrimPrefix(
-				filepath.ToSlash(strings.TrimPrefix(action.New, dest+string(filepath.Separator))), "/"))
-			wantTree(t, dest, layout.MarkerName, ReceiptName, relocated+"/"+tc.want)
+			// declared layout moves it there, so the shelf comes from the
+			// plan rather than from a constant.
+			landed, err := filepath.Rel(dest, action.New)
+			if err != nil {
+				t.Fatalf("relating %s to %s: %v", action.New, dest, err)
+			}
+			wantTree(t, dest, layout.MarkerName, ReceiptName, filepath.ToSlash(landed))
 		})
 	}
 }

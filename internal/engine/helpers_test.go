@@ -141,13 +141,19 @@ func dumpPlan(plan *Plan) string {
 	return b.String()
 }
 
-// wantTree asserts the exact set of files under a root.
+// wantTree asserts the exact set of files under a root. Expectations are
+// normalized to slash separators, the form the listing comes back in, so
+// that one built with filepath.Join on Windows still compares.
 func wantTree(t *testing.T, root string, want ...string) {
 	t.Helper()
 	got := testutil.RelPaths(t, root)
-	slices.Sort(want)
-	if !slices.Equal(got, want) {
-		t.Fatalf("tree under %s:\n got %v\nwant %v", root, got, want)
+	expected := make([]string, len(want))
+	for i, name := range want {
+		expected[i] = filepath.ToSlash(name)
+	}
+	slices.Sort(expected)
+	if !slices.Equal(got, expected) {
+		t.Fatalf("tree under %s:\n got %v\nwant %v", root, got, expected)
 	}
 }
 

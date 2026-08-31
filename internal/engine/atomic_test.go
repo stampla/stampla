@@ -65,10 +65,14 @@ func TestGroupRevertsMidway(t *testing.T) {
 		Resolution: fallbackLayout(t), Pool: pool,
 	})
 
-	// Somebody else takes the last member's target between the plan and
-	// the apply. The no-clobber claim is what notices.
+	// Something takes the last member's target between the plan and the
+	// apply, and the no-clobber claim is what notices. A directory is
+	// the blocker because no file lands on one on any platform, whatever
+	// the local rename does about existing targets.
 	blocked := plan.Groups[0].Actions[len(plan.Groups[0].Actions)-1].New
-	testutil.WriteFile(t, blocked, []byte("not ours"))
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatalf("planting the blocker: %v", err)
+	}
 
 	result, err := Apply(plan, ApplyOptions{})
 	if err != nil {
@@ -86,9 +90,10 @@ func TestGroupRevertsMidway(t *testing.T) {
 	if result.Members != 0 {
 		t.Errorf("a failed group counted %d landed members", result.Members)
 	}
-	// Only the blocker is left: the member that had already landed was
-	// taken back out, and no receipt claims otherwise.
-	wantTree(t, dest, dateDir+"/"+filepath.Base(blocked))
+	// Nothing is left behind at all: the member that had already landed
+	// was taken back out, and no receipt claims otherwise. The blocker
+	// is a directory, which the file listing does not report.
+	wantTree(t, dest)
 	if _, err := os.Stat(filepath.Join(dest, ReceiptName)); !os.IsNotExist(err) {
 		t.Error("a failed group wrote a receipt")
 	}

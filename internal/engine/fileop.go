@@ -165,14 +165,12 @@ func verifyLanded(scratch, src string, written int64, digest string) error {
 
 // claimRename renames old to new without ever overwriting new.
 //
-// POSIX rename silently replaces its target, which is the one thing this
-// tool may never do, so the target is claimed with a hard link first:
-// link fails atomically when the name is taken, and the source is only
-// unlinked once the claim is proven to be the same file. Windows rename
-// refuses an existing target natively and is used as it is. A filesystem
-// with no hard links falls back to checking and then renaming, which is
-// racy against another writer and is documented as the weaker guarantee
-// it is.
+// Rename replaces its target on every platform this runs on — POSIX
+// rename silently, and Windows because Go calls MoveFileEx with
+// MOVEFILE_REPLACE_EXISTING — and replacing a target is the one thing
+// this tool may never do. So the name is claimed before it is used: a
+// hard link fails atomically when the name is taken, and the source is
+// unlinked only once the claim is proven to be the same file.
 //
 // The window between the link and the unlink is a real crash window: it
 // leaves one file under two names. It is recognizable — the two names
@@ -180,15 +178,6 @@ func verifyLanded(scratch, src string, written int64, digest string) error {
 func claimRename(old, target string) error {
 	if isCaseOnlyRename(old, target) {
 		return caseOnlyRename(old, target)
-	}
-	if runtime.GOOS == "windows" {
-		if err := os.Rename(old, target); err != nil {
-			if errors.Is(err, fs.ErrExist) {
-				return &ExistsError{Path: target}
-			}
-			return err
-		}
-		return nil
 	}
 
 	err := os.Link(old, target)
@@ -199,12 +188,10 @@ func claimRename(old, target string) error {
 	case crossDevice(err):
 		return err
 	default:
-		// No hard links here (FAT, some network mounts). Nothing atomic
-		// is available, so look before leaping and accept the race.
-		if _, statErr := os.Lstat(target); statErr == nil {
-			return &ExistsError{Path: target}
-		}
-		return os.Rename(old, target)
+		// No hard links here: FAT and exFAT have none, and neither do
+		// some network mounts. An exclusive create claims the name
+		// instead.
+		return claimViaPlaceholder(old, target)
 	}
 
 	if err := sameFile(old, target); err != nil {
@@ -213,6 +200,44 @@ func claimRename(old, target string) error {
 		return err
 	}
 	return os.Remove(old)
+}
+
+// claimViaPlaceholder puts old at target on a filesystem that cannot
+// hard-link, by taking the name with an exclusive create first.
+//
+// The exclusive create is the atomic part: whoever wins it owns the
+// name, and everybody else is refused. Renaming onto the placeholder
+// afterwards does replace a file — but it replaces this run's own empty
+// one, which holds nothing to destroy. That is the whole reason for the
+// two steps; a bare check-then-rename would leave a window in which
+// somebody else's file appears at the target and is then overwritten.
+//
+// A crash between the two steps leaves an empty file at an identity
+// name. The next run reads a master target's content before believing
+// it, so an empty placeholder is refused there as a conflict rather than
+// mistaken for the photograph; a placeholder left at a sidecar's target,
+// which carries no content of its own to check, would be taken for the
+// sidecar. That residual window exists only where hard links do not.
+func claimViaPlaceholder(old, target string) error {
+	placeholder, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return &ExistsError{Path: target}
+		}
+		return err
+	}
+	if err := placeholder.Close(); err != nil {
+		_ = os.Remove(target)
+		return err
+	}
+	if err := os.Rename(old, target); err != nil {
+		// Take the empty claim back out, so a failure leaves the
+		// directory as it was found and a cross-filesystem fallback has
+		// a free name to copy into.
+		_ = os.Remove(target)
+		return err
+	}
+	return nil
 }
 
 // sameFile reports an error unless the two paths name one file.
