@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +14,7 @@ import (
 func TestProgressOnlyOnATerminal(t *testing.T) {
 	var stderr strings.Builder
 	p := &progressLine{out: &out{w: &stderr}}
-	p.emit(engine.PhaseRead, 1, 2, "/card/DSC_1234.NEF")
+	p.emit(engine.PhaseRead, 1, 2, filepath.Join(testCard, "DSC_1234.NEF"))
 	p.clear()
 	if stderr.Len() != 0 {
 		t.Errorf("progress was drawn on a stream that is not a terminal: %q", stderr.String())
@@ -24,7 +25,7 @@ func TestProgressRewritesOneLine(t *testing.T) {
 	var stderr strings.Builder
 	p := &progressLine{out: &out{w: &stderr}, on: true}
 
-	p.emit(engine.PhaseRead, 1, 10, "/card/DSC_1234.NEF")
+	p.emit(engine.PhaseRead, 1, 10, filepath.Join(testCard, "DSC_1234.NEF"))
 	first := stderr.String()
 	if !strings.HasPrefix(first, "\rread 1/10 DSC_1234.NEF") {
 		t.Errorf("progress = %q, want the phase, the count and the file", first)
@@ -36,7 +37,7 @@ func TestProgressRewritesOneLine(t *testing.T) {
 	// The throttle: an engine reporting per group reports thousands of
 	// times a second, and none of those are readable.
 	stderr.Reset()
-	p.emit(engine.PhaseRead, 2, 10, "/card/DSC_1235.NEF")
+	p.emit(engine.PhaseRead, 2, 10, filepath.Join(testCard, "DSC_1235.NEF"))
 	if stderr.Len() != 0 {
 		t.Errorf("progress redrew inside the interval: %q", stderr.String())
 	}
@@ -67,7 +68,7 @@ func TestProgressRewritesOneLine(t *testing.T) {
 func TestProgressFitsTheLine(t *testing.T) {
 	var stderr strings.Builder
 	p := &progressLine{out: &out{w: &stderr}, on: true}
-	p.emit(engine.PhaseApply, 1, 2, "/card/"+strings.Repeat("é", 200)+".nef")
+	p.emit(engine.PhaseApply, 1, 2, filepath.Join(testCard, strings.Repeat("é", 200)+".nef"))
 	line := strings.TrimPrefix(stderr.String(), "\r")
 	// Cut by runes: a filename cut mid-character leaves a broken
 	// sequence no later write repairs.
@@ -84,7 +85,7 @@ func TestProgressText(t *testing.T) {
 		path  string
 		want  string
 	}{
-		{phase: engine.PhaseRead, done: 3, total: 10, path: "/card/a.nef", want: "read 3/10 a.nef"},
+		{phase: engine.PhaseRead, done: 3, total: 10, path: filepath.Join(testCard, "a.nef"), want: "read 3/10 a.nef"},
 		{phase: engine.PhaseHash, done: 0, total: 0, want: "hash"},
 		{phase: engine.PhaseVerify, done: 4, total: 0, want: "verify 4"},
 		{phase: engine.PhaseApply, done: 2, total: 2, want: "apply 2/2"},

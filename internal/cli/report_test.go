@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,19 +20,19 @@ func TestExitCode(t *testing.T) {
 	}{
 		{
 			name: "nothing to do",
-			a:    archive{plan: fakePlan(engine.VerifySelf, converged("/photos/a.jpg"))},
+			a:    archive{plan: fakePlan(engine.VerifySelf, converged(archiveFile))},
 			want: finding.ExitConverged,
 		},
 		{
 			name: "work that needs doing",
 			a: archive{plan: fakePlan(engine.Copy,
-				converged("/photos/a.jpg"), incoming("/card/b.nef", "/photos/b.nef"))},
+				converged(archiveFile), incoming(cardFile, filepath.Join(testDest, "b.nef")))},
 			want: finding.ExitPending,
 		},
 		{
 			name: "damage dominates work",
 			a: archive{plan: fakePlan(engine.VerifySelf,
-				incoming("/card/b.nef", "/photos/b.nef"), corrupt("/photos/c.nef"))},
+				incoming(cardFile, filepath.Join(testDest, "b.nef")), corrupt(damagedFile))},
 			want: finding.ExitAlarm,
 		},
 		{
@@ -39,15 +40,15 @@ func TestExitCode(t *testing.T) {
 			// why an import that worked exits 0 and its own preview exits 1.
 			name: "work that landed",
 			a: archive{
-				plan:   fakePlan(engine.Copy, incoming("/card/b.nef", "/photos/b.nef")),
-				result: &engine.Result{Landed: []engine.Action{{Old: "/card/b.nef", New: "/photos/b.nef"}}, Members: 1},
+				plan:   fakePlan(engine.Copy, incoming(cardFile, filepath.Join(testDest, "b.nef"))),
+				result: &engine.Result{Landed: []engine.Action{{Old: cardFile, New: filepath.Join(testDest, "b.nef")}}, Members: 1},
 			},
 			want: finding.ExitConverged,
 		},
 		{
 			name: "work that did not land",
 			a: archive{
-				plan:   fakePlan(engine.Copy, incoming("/card/b.nef", "/photos/b.nef")),
+				plan:   fakePlan(engine.Copy, incoming(cardFile, filepath.Join(testDest, "b.nef"))),
 				result: &engine.Result{},
 			},
 			want: finding.ExitPending,
@@ -57,9 +58,9 @@ func TestExitCode(t *testing.T) {
 			// so nothing in the findings speaks for a failed group.
 			name: "a group that would not land",
 			a: archive{
-				plan: fakePlan(engine.Copy, incoming("/card/b.nef", "/photos/b.nef")),
+				plan: fakePlan(engine.Copy, incoming(cardFile, filepath.Join(testDest, "b.nef"))),
 				result: &engine.Result{Failed: []engine.Failure{
-					{Key: "b", Path: "/card/b.nef", Err: errors.New("read-only file system")},
+					{Key: "b", Path: cardFile, Err: errors.New("read-only file system")},
 				}},
 			},
 			want: finding.ExitAlarm,
@@ -67,9 +68,9 @@ func TestExitCode(t *testing.T) {
 		{
 			name: "a failure over an otherwise clean run",
 			a: archive{
-				plan: fakePlan(engine.Move, converged("/photos/a.jpg")),
+				plan: fakePlan(engine.Move, converged(archiveFile)),
 				result: &engine.Result{Failed: []engine.Failure{
-					{Key: "a", Path: "/photos/a.jpg", Err: errors.New("no space left on device")},
+					{Key: "a", Path: archiveFile, Err: errors.New("no space left on device")},
 				}},
 			},
 			want: finding.ExitAlarm,
@@ -105,13 +106,13 @@ func TestSectionsOrderAndContent(t *testing.T) {
 	a := archive{
 		mode: engine.Move,
 		plan: fakePlan(engine.Move,
-			converged("/photos/a.jpg"),
-			incoming("/card/b.nef", "/photos/2026/b.nef"),
-			corrupt("/photos/c.nef"),
-			finding.Finding{Class: finding.Unresolvable, Path: "/photos/d.mp4", Old: "/photos/d.mp4", Detail: "no capture time"},
+			converged(archiveFile),
+			incoming(cardFile, relocatedFile),
+			corrupt(damagedFile),
+			finding.Finding{Class: finding.Unresolvable, Path: unresolvableFile, Old: unresolvableFile, Detail: "no capture time"},
 		),
 		result: &engine.Result{
-			Landed:  []engine.Action{{Class: finding.Incoming, Old: "/card/b.nef", New: "/photos/2026/b.nef"}},
+			Landed:  []engine.Action{{Class: finding.Incoming, Old: cardFile, New: relocatedFile}},
 			Members: 1,
 		},
 	}
@@ -126,7 +127,7 @@ func TestSectionsOrderAndContent(t *testing.T) {
 	if strings.Join(titles, ",") != strings.Join(want, ",") {
 		t.Fatalf("sections() = %v, want %v", titles, want)
 	}
-	if found[0].entries[0].to != "/photos/2026/b.nef" {
+	if found[0].entries[0].to != relocatedFile {
 		t.Errorf("the landed section does not carry where the file went: %+v", found[0].entries[0])
 	}
 	if !found[1].alarm || !found[1].evidence {
@@ -135,7 +136,7 @@ func TestSectionsOrderAndContent(t *testing.T) {
 	// Converged files are counted, never listed.
 	for _, sec := range found {
 		for _, line := range sec.entries {
-			if line.from == "/photos/a.jpg" {
+			if line.from == archiveFile {
 				t.Error("a converged file was listed")
 			}
 		}
@@ -147,7 +148,7 @@ func TestSectionsOrderAndContent(t *testing.T) {
 func TestSectionsPreviewShowsThePlan(t *testing.T) {
 	a := archive{
 		mode: engine.Copy,
-		plan: fakePlan(engine.Copy, incoming("/card/preview.nef", "/photos/2026/preview.nef")),
+		plan: fakePlan(engine.Copy, incoming(filepath.Join(testCard, "preview.nef"), filepath.Join(testDest, "2026", "preview.nef"))),
 	}
 	found := sections(a)
 	if len(found) != 1 || found[0].title != string(finding.Incoming) {
@@ -158,21 +159,21 @@ func TestSectionsPreviewShowsThePlan(t *testing.T) {
 // TestSectionsHideWhatFailed proves a rename that did not happen is
 // never printed as one that did.
 func TestSectionsHideWhatFailed(t *testing.T) {
-	plan := fakePlan(engine.Move, incoming("/card/b.nef", "/photos/2026/b.nef"))
+	plan := fakePlan(engine.Move, incoming(cardFile, relocatedFile))
 	plan.Groups = []engine.GroupPlan{{
 		Key:     "b",
-		Actions: []engine.Action{{Class: finding.Incoming, Verb: engine.VerbMove, Old: "/card/b.nef", New: "/photos/2026/b.nef"}},
+		Actions: []engine.Action{{Class: finding.Incoming, Verb: engine.VerbMove, Old: cardFile, New: relocatedFile}},
 	}}
 	a := archive{
 		mode: engine.Move,
 		plan: plan,
 		result: &engine.Result{Failed: []engine.Failure{
-			{Key: "b", Path: "/card/b.nef", Err: errors.New("input/output error")},
+			{Key: "b", Path: cardFile, Err: errors.New("input/output error")},
 		}},
 	}
 	for _, sec := range sections(a) {
 		for _, line := range sec.entries {
-			if line.from == "/card/b.nef" {
+			if line.from == cardFile {
 				t.Errorf("a file whose group failed was reported as %s work", sec.title)
 			}
 		}
@@ -194,7 +195,7 @@ func TestProvenanceText(t *testing.T) {
 			res:  layout.Resolution{Source: layout.SourceConfig, SourcePath: "/home/jkb/.config/stampla/config"},
 			want: "from the global config /home/jkb/.config/stampla/config",
 		},
-		{res: layout.Resolution{Source: "/photos/.stampla"}, want: "from /photos/.stampla"},
+		{res: layout.Resolution{Source: testMarker}, want: "from " + testMarker},
 	}
 	for _, tc := range tests {
 		if got := provenanceText(tc.res); got != tc.want {
@@ -207,22 +208,22 @@ func TestHumanReport(t *testing.T) {
 	var stdout, stderr strings.Builder
 	h := newHuman(&out{w: &stdout}, &out{w: &stderr}, palette{}, false)
 
-	res := declaredIn("/photos", pattern)
+	res := declaredIn(testDest, pattern)
 	a := archive{
-		root: "/photos",
+		root: testDest,
 		mode: engine.Copy,
 		res:  res,
 		plan: fakePlan(engine.Copy,
-			converged("/photos/a.jpg"),
-			corrupt("/photos/c.nef"),
+			converged(archiveFile),
+			corrupt(damagedFile),
 		),
-		result:  &engine.Result{Members: 1, Receipt: "/photos/.stampla.log", Landed: []engine.Action{{Old: "/card/b.nef", New: "/photos/2026/b.nef"}}},
+		result:  &engine.Result{Members: 1, Receipt: testReceipt, Landed: []engine.Action{{Old: cardFile, New: relocatedFile}}},
 		skipped: scanner.Skipped{Hidden: 3, Other: 1},
-		notes:   []string{"hint: a hint", "warning: /photos/.stampla:3: unknown key \"colour\""},
+		notes:   []string{"hint: a hint", `warning: ` + testMarker + `:3: unknown key "colour"`},
 	}
-	a.result.Marker = engine.MarkerRecord{Written: true, Path: "/photos/.stampla", Pattern: pattern}
+	a.result.Marker = engine.MarkerRecord{Written: true, Path: testMarker, Pattern: pattern}
 
-	h.head(engine.Copy, "/photos", false, res)
+	h.head(engine.Copy, testDest, false, res)
 	h.body(a)
 	h.tail(outcome{exit: finding.ExitAlarm})
 	report := stdout.String()
@@ -230,20 +231,20 @@ func TestHumanReport(t *testing.T) {
 	// The provenance line comes first, before any finding: a report that
 	// does not say what governed it is a report about nothing in
 	// particular.
-	if !strings.HasPrefix(report, "layout: "+pattern+" (from /photos/.stampla)\n") {
+	if !strings.HasPrefix(report, "layout: "+pattern+" (from "+testMarker+")\n") {
 		t.Errorf("the report does not lead with its provenance:\n%s", report)
 	}
 	for _, want := range []string{
 		"copied (1):",
-		"/card/b.nef -> /photos/2026/b.nef",
+		cardFile + " -> " + relocatedFile,
 		"corrupt (1):",
 		"the hash disagrees",
 		"2 groups, 2 examined: 1 corrupt, 1 converged",
-		"applied 1 file, recorded in /photos/.stampla.log",
-		`declared layout = "` + pattern + `" in /photos/.stampla`,
+		"applied 1 file, recorded in " + testReceipt,
+		`declared layout = "` + pattern + `" in ` + testMarker,
 		"skipped 3 hidden, 1 in formats stampla does not name",
 		"hint: a hint",
-		`warning: /photos/.stampla:3: unknown key "colour"`,
+		`warning: ` + testMarker + `:3: unknown key "colour"`,
 	} {
 		if !strings.Contains(report, want) {
 			t.Errorf("the report does not carry %q:\n%s", want, report)
@@ -257,7 +258,7 @@ func TestHumanReport(t *testing.T) {
 func TestHumanReportColorsDamage(t *testing.T) {
 	var stdout, stderr strings.Builder
 	h := newHuman(&out{w: &stdout}, &out{w: &stderr}, palette{on: true}, false)
-	a := archive{plan: fakePlan(engine.VerifySelf, corrupt("/photos/damaged.nef"))}
+	a := archive{plan: fakePlan(engine.VerifySelf, corrupt(filepath.Join(testDest, "damaged.nef")))}
 	h.body(a)
 
 	report := stdout.String()
@@ -275,13 +276,13 @@ func TestFailuresAreReported(t *testing.T) {
 	a := archive{
 		plan: fakePlan(engine.Move),
 		result: &engine.Result{Failed: []engine.Failure{
-			{Key: "b", Path: "/card/b.nef", Err: errors.New("input/output error"), Reverted: false},
+			{Key: "b", Path: cardFile, Err: errors.New("input/output error"), Reverted: false},
 		}},
 	}
 	h.body(a)
 
 	report := stdout.String()
-	for _, want := range []string{"failed (1):", "/card/b.nef", "input/output error", "part-applied"} {
+	for _, want := range []string{"failed (1):", cardFile, "input/output error", "part-applied"} {
 		if !strings.Contains(report, want) {
 			t.Errorf("the report does not carry %q:\n%s", want, report)
 		}
@@ -308,6 +309,17 @@ func TestSkippedLine(t *testing.T) {
 		t.Errorf("skippedLine(hidden) = %q", got)
 	}
 }
+
+// The files the fabricated findings are about, spelled the way this
+// platform spells them.
+var (
+	archiveFile      = filepath.Join(testDest, "a.jpg")
+	cardFile         = filepath.Join(testCard, "b.nef")
+	relocatedFile    = filepath.Join(testDest, "2026", "b.nef")
+	damagedFile      = filepath.Join(testDest, "c.nef")
+	unresolvableFile = filepath.Join(testDest, "d.mp4")
+	testReceipt      = filepath.Join(testDest, engine.ReceiptName)
+)
 
 // Findings a report is built from.
 

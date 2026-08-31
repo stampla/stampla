@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,11 +21,55 @@ const (
 	videoName = "20260703_130727_082746c9.mp4"
 	dateDir   = "2026/2026-07"
 	pattern   = "{yyyy}/{yyyy}-{mm}"
-
-	// testDest is the archive the fabricated plans are about. Nothing
-	// reads it from disk; it is a path for a report to quote.
-	testDest = "/photos"
 )
+
+// The paths the fabricated plans are about. Nothing reads them from
+// disk; they are paths for a report and a stream to quote.
+//
+// They are built with filepath, not written out, because the code under
+// test joins and renders paths the way this platform spells them — a
+// marker's path is filepath.Join, so it wears backslashes on Windows and
+// a drive letter in front. An expectation written as "/photos/.stampla"
+// would be an expectation that only ever held on Unix, and the fix for
+// that must not be a weaker assertion: every expectation below is built
+// from these same values.
+var (
+	testDest   = testPath("photos")
+	testCard   = testPath("card")
+	testMarker = filepath.Join(testDest, layout.MarkerName)
+)
+
+// testPath is an absolute path on this platform: rooted at the volume
+// the tests are running on, so Windows gets a drive letter rather than a
+// path no filesystem there would accept.
+func testPath(elem ...string) string {
+	root := string(filepath.Separator)
+	if wd, err := os.Getwd(); err == nil {
+		root = filepath.VolumeName(wd) + root
+	}
+	return filepath.Join(append([]string{root}, elem...)...)
+}
+
+// TestFixturePathsAreThisPlatformsPaths pins the derivation every
+// expectation in this package rests on.
+//
+// A marker's path is whatever the code's own filepath.Join makes of it,
+// so a fixture written out as "/photos/.stampla" is a fixture that
+// agrees with the code on Unix and disagrees with it on Windows, where
+// the separator and the volume are both different. Building the fixtures
+// with filepath is what keeps the assertions exact rather than lenient.
+func TestFixturePathsAreThisPlatformsPaths(t *testing.T) {
+	if !filepath.IsAbs(testDest) {
+		t.Errorf("testDest = %q, which is not an absolute path on this platform", testDest)
+	}
+	if rendered := (&layout.Marker{Dir: testDest}).Path(); rendered != testMarker {
+		t.Errorf("testMarker = %q, but the code renders it %q", testMarker, rendered)
+	}
+	if strings.ContainsRune(testMarker, '/') != (filepath.Separator == '/') {
+		t.Errorf("testMarker = %q, which is not spelled with this platform's separator %q",
+			testMarker, filepath.Separator)
+	}
+}
 
 // runResult is what one drive of the interface produced.
 type runResult struct {

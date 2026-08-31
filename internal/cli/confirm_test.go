@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -79,7 +80,7 @@ func TestTripwires(t *testing.T) {
 			name: "a catalog beside an mv",
 			in: confirmInput{
 				mode: engine.Move,
-				plan: withDAM(fakePlan(engine.Move), "/photos/Lightroom.lrcat"),
+				plan: withDAM(fakePlan(engine.Move), testCatalog),
 			},
 			want: []string{"dam"},
 		},
@@ -89,7 +90,7 @@ func TestTripwires(t *testing.T) {
 			name: "a catalog beside a cp",
 			in: confirmInput{
 				mode: engine.Copy,
-				plan: withDAM(fakePlan(engine.Copy), "/photos/Lightroom.lrcat"),
+				plan: withDAM(fakePlan(engine.Copy), testCatalog),
 			},
 		},
 		{
@@ -117,7 +118,7 @@ func TestTripwires(t *testing.T) {
 				mode: engine.Move,
 				plan: withDAM(touching(planWith(engine.Move,
 					flagOverriding("{yyyy}/{yyyy}-{mm}", "Capture")), 412, 500),
-					"/photos/Lightroom.lrcat"),
+					testCatalog),
 				layout:    flag("Capture"),
 				removable: "/Volumes/NIKON D850",
 			},
@@ -150,7 +151,7 @@ func TestTripwireEvidence(t *testing.T) {
 		mode: engine.Move,
 		plan: withDAM(touching(planWith(engine.Move,
 			flagOverriding("{yyyy}/{yyyy}-{mm}", asked)), 412, 500),
-			"/photos/Lightroom.lrcat"),
+			testCatalog),
 		layout:    &asked,
 		removable: "/Volumes/NIKON D850",
 	})
@@ -160,9 +161,9 @@ func TestTripwireEvidence(t *testing.T) {
 	}
 
 	want := map[string][]string{
-		"layout":     {"{yyyy}", "{yyyy}/{yyyy}-{mm}", "/photos/.stampla"},
-		"reorganize": {"412", "500", "82%", "/photos"},
-		"dam":        {"/photos/Lightroom.lrcat", "dam = \"lrc\""},
+		"layout":     {"{yyyy}", "{yyyy}/{yyyy}-{mm}", testMarker},
+		"reorganize": {"412", "500", "82%", testDest},
+		"dam":        {testCatalog, `dam = "lrc"`},
 		"removable":  {"/Volumes/NIKON D850", "verified"},
 	}
 	for name, phrases := range want {
@@ -181,7 +182,7 @@ func TestTripwireEvidence(t *testing.T) {
 func TestDAMPromptNamesFiveAndCountsTheRest(t *testing.T) {
 	var artifacts []string
 	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g"} {
-		artifacts = append(artifacts, "/photos/"+name+".lrcat")
+		artifacts = append(artifacts, filepath.Join(testDest, name+".lrcat"))
 	}
 	wire, fired := damBeside(confirmInput{
 		mode: engine.Move,
@@ -193,7 +194,7 @@ func TestDAMPromptNamesFiveAndCountsTheRest(t *testing.T) {
 	if !strings.Contains(wire.reason, "and 2 more") {
 		t.Errorf("the dam prompt does not count the artifacts it did not name:\n%s", wire.reason)
 	}
-	if strings.Contains(wire.reason, "/photos/f.lrcat") {
+	if strings.Contains(wire.reason, filepath.Join(testDest, "f.lrcat")) {
 		t.Errorf("the dam prompt listed more than five artifacts:\n%s", wire.reason)
 	}
 }
@@ -255,6 +256,10 @@ func TestConfirmStopsAtTheFirstNo(t *testing.T) {
 		t.Error("confirm() asked the second question after the first was declined")
 	}
 }
+
+// testCatalog is a digital asset manager's catalog beside the archive,
+// spelled the way this platform spells it.
+var testCatalog = filepath.Join(testDest, "Lightroom.lrcat")
 
 // Helpers that fabricate the plans the predicates read.
 
