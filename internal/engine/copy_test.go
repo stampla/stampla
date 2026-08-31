@@ -50,6 +50,7 @@ func TestCopyRoundTrip(t *testing.T) {
 	if result.Members != 2 {
 		t.Errorf("landed %d members, want 2", result.Members)
 	}
+	wantLandedMatchesReceipt(t, dest, result)
 	wantTree(t, dest,
 		layout.MarkerName,
 		ReceiptName,
@@ -91,6 +92,15 @@ func TestCopyRoundTrip(t *testing.T) {
 	}
 	if again.ExitCode() != finding.ExitConverged {
 		t.Errorf("re-import exit code %d, want %d", again.ExitCode(), finding.ExitConverged)
+	}
+	// A run that writes nothing reports nothing changed, and adds no
+	// line to the history.
+	repeat := mustApply(t, again, ApplyOptions{})
+	if len(repeat.Landed) != 0 {
+		t.Errorf("a re-import landed %v", repeat.Landed)
+	}
+	if lines := receiptLines(t, dest); len(lines) != 2 {
+		t.Errorf("the receipt grew to %d lines on a re-import", len(lines))
 	}
 }
 
@@ -215,8 +225,8 @@ func TestConflictRefusesOccupiedTarget(t *testing.T) {
 	}
 
 	result := mustApply(t, plan, ApplyOptions{})
-	if result.Members != 0 {
-		t.Errorf("a refused conflict landed %d members", result.Members)
+	if result.Members != 0 || len(result.Landed) != 0 {
+		t.Errorf("a refused conflict landed %v", result.Landed)
 	}
 	after, err := os.ReadFile(occupied)
 	if err != nil || string(after) != string(before) {

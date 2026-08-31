@@ -155,6 +155,12 @@ func TestMoveAcrossVolumes(t *testing.T) {
 	if result.Members != 2 {
 		t.Errorf("landed %d members, want 2", result.Members)
 	}
+	wantLandedMatchesReceipt(t, dest, result)
+	for _, action := range result.Landed {
+		if action.Verb != VerbMove {
+			t.Errorf("%s landed as %q, want %q", action.Old, action.Verb, VerbMove)
+		}
+	}
 	wantTree(t, dest,
 		layout.MarkerName, ReceiptName,
 		dateDir+"/20260703_150727_0a8c8109.jpg",
@@ -208,8 +214,8 @@ func TestCopyLeavesFilesAlreadyUnderTheRoot(t *testing.T) {
 		t.Errorf("cp plans %q for a file already under the root, want nothing", action.Verb)
 	}
 	result := mustApply(t, plan, ApplyOptions{})
-	if result.Members != 0 {
-		t.Errorf("cp landed %d members, want none", result.Members)
+	if result.Members != 0 || len(result.Landed) != 0 {
+		t.Errorf("cp landed %v, want nothing", result.Landed)
 	}
 	wantTree(t, dest, "Imported/DSC_1234.jpg")
 }

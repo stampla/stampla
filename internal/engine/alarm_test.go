@@ -77,8 +77,8 @@ func TestWriteOnceAlarms(t *testing.T) {
 					return
 				}
 				result := mustApply(t, plan, ApplyOptions{})
-				if result.Members != 0 {
-					t.Errorf("an alarmed group landed %d members", result.Members)
+				if result.Members != 0 || len(result.Landed) != 0 {
+					t.Errorf("an alarmed group landed %v", result.Landed)
 				}
 				wantTree(t, dest, dateDir+"/"+videoName)
 				if after, err := os.ReadFile(damaged); err != nil || string(after) != string(before) {

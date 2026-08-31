@@ -90,13 +90,18 @@ func (a *applier) group(group GroupPlan) {
 	// sources, deliberately: the receipt is the only record of what a
 	// file used to be called, and a crash between the copy and the
 	// record would lose the very thing the record exists for.
-	if err := a.record(work); err != nil {
+	//
+	// The receipt and Result.Landed are written from one slice, in one
+	// order: what a caller reports and what the archive's own history
+	// says must never be two accounts of the same run.
+	if err := a.record(done); err != nil {
 		a.result.Failed = append(a.result.Failed, Failure{
 			Key: group.Key, Path: a.receiptPath(), Err: err, Reverted: false,
 		})
 	}
 	a.result.Applied = append(a.result.Applied, group.Key)
-	a.result.Members += len(work)
+	a.result.Landed = append(a.result.Landed, done...)
+	a.result.Members += len(done)
 	if leftover := a.drop(group, work); leftover != nil {
 		a.result.Failed = append(a.result.Failed, *leftover)
 	}

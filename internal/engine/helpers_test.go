@@ -167,6 +167,40 @@ func receiptLines(t *testing.T, dest string) [][]string {
 	return lines
 }
 
+// wantLandedMatchesReceipt asserts that what the result says changed and
+// what the archive's own history says changed are one list in one order.
+// The equivalence is the point of both: a caller printing old and new
+// paths from Result.Landed must print exactly what a reader of
+// .stampla.log would find there afterwards.
+func wantLandedMatchesReceipt(t *testing.T, dest string, result *Result) {
+	t.Helper()
+	lines := receiptLines(t, dest)
+	if len(lines) != len(result.Landed) {
+		t.Fatalf("%d landed actions but %d receipt lines: %v", len(result.Landed), len(lines), lines)
+	}
+	if result.Members != len(result.Landed) {
+		t.Errorf("Members is %d but Landed holds %d", result.Members, len(result.Landed))
+	}
+	for i, action := range result.Landed {
+		fields := lines[i]
+		if len(fields) != 4 {
+			t.Fatalf("receipt line %d has %d fields: %q", i, len(fields), fields)
+		}
+		if got, want := fields[1], receiptVerb(action.Verb); got != want {
+			t.Errorf("line %d: verb %q, want %q", i, got, want)
+		}
+		if got, want := fields[2], absPath(action.Old); got != want {
+			t.Errorf("line %d: old %q, want %q", i, got, want)
+		}
+		if got := fields[3]; got != action.New {
+			t.Errorf("line %d: new %q, want %q", i, got, action.New)
+		}
+		if action.Verb == VerbNone {
+			t.Errorf("line %d: a landed action carries no verb", i)
+		}
+	}
+}
+
 // The markers in the fixtures whose payload a test corrupts: the JPEG's
 // start-of-scan and the MP4's media data atom. A byte is flipped just
 // inside each, which is entropy-coded data in one and a compressed frame

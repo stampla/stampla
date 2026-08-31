@@ -284,16 +284,31 @@ type MarkerRecord struct {
 // exception: a cross-filesystem move whose copies all verified but whose
 // source could not then be deleted is applied — the archive holds the
 // files — and reported, because the source is still there.
+//
+// Failed is operational trouble rather than a finding: there is no
+// class for "this could not be written", so nothing in Findings speaks
+// for it and finding.ExitCode cannot see it. A caller reports a
+// non-empty Failed at the alarm exit code (finding.ExitAlarm, 2), which
+// is where the interface contract puts operational trouble, and reports
+// it whatever the plan's own exit code was.
 type Result struct {
 	// Applied are the keys of the groups that fully landed, in plan
 	// order.
 	Applied []string
+	// Landed are the actions that were actually performed, in the order
+	// they were performed — the group order of the plan, and within
+	// each group the order Apply acted in. It is the report of what
+	// changed: one entry per mutated file, carrying the same old and
+	// new paths the receipt recorded for it, in the same order. A run
+	// that wrote nothing leaves it empty, so a preview and a refused
+	// run both report no changes rather than an absence of information.
+	Landed []Action
 	// Skipped are the keys of the groups that had nothing to do or were
 	// refused by the plan.
 	Skipped []string
 	// Failed are the groups that could not land.
 	Failed []Failure
-	// Members counts the files that landed.
+	// Members counts the files that landed. It is len(Landed).
 	Members int
 	// Receipt is the receipt file every landed member was recorded in,
 	// empty when nothing was recorded.

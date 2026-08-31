@@ -150,11 +150,15 @@ func TestCrashRecovery(t *testing.T) {
 		if action.Verb != VerbUnlink {
 			t.Fatalf("verb %q, want %q\n%s", action.Verb, VerbUnlink, dumpPlan(plan))
 		}
-		mustApply(t, plan, ApplyOptions{})
+		result := mustApply(t, plan, ApplyOptions{})
 		wantTree(t, dest, ReceiptName, "Imported/"+jpegName)
-		// The rename is recorded as the move it completes.
-		lines := receiptLines(t, dest)
-		if len(lines) != 1 || lines[0][1] != "mv" || lines[0][2] != source {
+		// Finishing an interrupted rename is a landed member like any
+		// other, recorded as the move it completes.
+		if len(result.Landed) != 1 || result.Landed[0].Verb != VerbUnlink {
+			t.Fatalf("landed %v, want one unlink completion", result.Landed)
+		}
+		wantLandedMatchesReceipt(t, dest, result)
+		if lines := receiptLines(t, dest); lines[0][1] != "mv" || lines[0][2] != source {
 			t.Errorf("receipt %v does not record the completed move", lines)
 		}
 	})
